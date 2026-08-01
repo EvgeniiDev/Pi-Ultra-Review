@@ -5,7 +5,7 @@ export const MAX_DIFF_CHARS = 20_000
 // Параллельность ревью: не больше PROVIDER_MAX_CONCURRENCY одновременных
 // запросов к одному провайдеру и не больше GLOBAL_MAX_CONCURRENCY всего,
 // чтобы не долбить провайдера кучей запросов (rate-limit, socket exhaustion).
-export const PROVIDER_MAX_CONCURRENCY = 4
+export const PROVIDER_MAX_CONCURRENCY = 2
 export const GLOBAL_MAX_CONCURRENCY = 10
 
 // Параметры вызова модели.
