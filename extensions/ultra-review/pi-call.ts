@@ -64,15 +64,18 @@ export async function runAgent(
   prompt: string,
   root: string,
   signal?: AbortSignal,
-): Promise<{ text: string; toolCalls: number }> {
+): Promise<{ text: string; toolCalls: number; readFiles: string[] }> {
   const label = `${model.provider}/${model.id}`
   const tools: Tool[] = [makeReadTool()]
   const initialMessages: UserMessage[] = [
     { role: "user", content: [{ type: "text", text: "Review the files in scope and output your verdict." }], timestamp: Date.now() },
   ]
+  const readFiles = new Set<string>()
   const executor = async (call: { id?: string; name?: string; arguments?: Record<string, unknown> }) => {
     const args = call.arguments ?? {}
-    return readFileSafely(root, String(args.path ?? ""), args.startLine as number | undefined, args.endLine as number | undefined)
+    const path = String(args.path ?? "")
+    if (path) readFiles.add(path)
+    return readFileSafely(root, path, args.startLine as number | undefined, args.endLine as number | undefined)
   }
 
   let toolCalls = 0
@@ -93,5 +96,5 @@ export async function runAgent(
     // задача уйдёт в failed с понятной причиной.
     throw new Error(`${label} agent call failed (read_file): ${(err as Error).message}`)
   }
-  return { text, toolCalls }
+  return { text, toolCalls, readFiles: [...readFiles] }
 }

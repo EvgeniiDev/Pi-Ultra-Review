@@ -22,12 +22,16 @@ export interface Scope {
   diff?: string
 }
 
+export type Severity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+
 export interface ReviewSpec {
   role: string
   mission: string
   investigate: string[]
   ignore: string[]
   severityGuidance: string[]
+  /** Какие severity разрешены для этого спека (style не может выдавать CRITICAL). */
+  allowedSeverities: Severity[]
 }
 
 export interface ReviewConfig {
@@ -37,6 +41,14 @@ export interface ReviewConfig {
   deep: boolean
   /** Финальный проход судьи: дедупликация + валидация находок. */
   judge: boolean
+}
+
+/** Runtime-валидация specId: тип существует только в compile-time. */
+export function assertSpecId(value: unknown): SpecId {
+  if (typeof value === "string" && (SPEC_IDS as readonly string[]).includes(value)) {
+    return value as SpecId
+  }
+  throw new Error(`Unknown review spec: ${String(value)}`)
 }
 
 /** Находка, распарсенная из вывода ревьюера для судьи. */
