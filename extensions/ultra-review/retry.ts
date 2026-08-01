@@ -37,3 +37,25 @@ export async function retryOnEmpty(
     await sleep(delayMs * (attempt + 1), signal)
   }
 }
+
+/**
+ * Ретрай падающих вызовов по предикату (например, rate-limit 429):
+ * тот же вызов, ограниченное число попыток, линейный backoff.
+ */
+export async function retryOnFailure<T>(
+  label: string,
+  fn: () => Promise<T>,
+  isRetryable: (err: unknown) => boolean,
+  retries: number,
+  delayMs: number,
+  signal?: AbortSignal,
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      if (attempt >= retries || signal?.aborted || !isRetryable(err)) throw err
+      await sleep(delayMs * (attempt + 1), signal)
+    }
+  }
+}

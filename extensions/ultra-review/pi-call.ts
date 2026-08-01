@@ -3,7 +3,7 @@ import type { Api, Message, Model, Tool } from "@earendil-works/pi-ai"
 import { Type } from "@sinclair/typebox"
 import { readFileSafely, runAgentLoop, type AgentChat, type AgentTurn } from "./agent.ts"
 import { EMPTY_RESPONSE_RETRIES, MODEL_MAX_TOKENS, MODEL_TEMPERATURE, RETRY_DELAY_MS } from "./constants.ts"
-import { retryOnEmpty } from "./retry.ts"
+import { retryOnEmpty, retryOnFailure } from "./retry.ts"
 import type { PiModelLike, PiRegistryLike } from "./types.ts"
 
 /**
@@ -89,7 +89,16 @@ export async function runAgent(
 
   let text: string
   try {
-    text = await retryOnEmpty(label, attempt, EMPTY_RESPONSE_RETRIES, RETRY_DELAY_MS, signal)
+    // 429/rate-limit — временный сбой провайдера: тот же вызов, ограниченный
+    // ретрай с backoff (не фолбэк!); пустой ответ ретраится как раньше.
+    const isRateLimit = (e: unknown) => /429|rate\s*limit/i.test((e as Error).message ?? "")
+    text = await retryOnEmpty(
+      label,
+      () => retryOnFailure(label, attempt, isRateLimit, 2, RETRY_DELAY_MS, signal),
+      EMPTY_RESPONSE_RETRIES,
+      RETRY_DELAY_MS,
+      signal,
+    )
   } catch (err) {
     if (signal?.aborted) throw err
     // Провайдер мог не принять tools или модель упала — без тихого деграда,

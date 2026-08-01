@@ -305,9 +305,27 @@ const FILE_KIND_POLICY: Record<string, string> = {
   code: "kind=code",
 }
 
+/** Манифест (список путей) тоже должен быть ограничен: без капа на больших репо промпт раздувается на каждой итерации агента. */
+export const MAX_MANIFEST_FILES = 250
+
+export function renderFileList(files: string[]): string {
+  if (files.length === 0) return "- (no files)"
+  const capped = files.length > MAX_MANIFEST_FILES
+  const listed = capped ? files.slice(0, MAX_MANIFEST_FILES) : files
+  return listed
+    .map((f) => `- ${f}`)
+    .concat(capped ? [`- …${files.length - MAX_MANIFEST_FILES} more files (use read_file to explore)`] : [])
+    .join("\n")
+}
+
 export function renderFileMetadata(files: string[]): string {
   if (files.length === 0) return "- (no files)"
-  return files.map((f) => `- ${f} — ${FILE_KIND_POLICY[classifyFile(f)]}`).join("\n")
+  const capped = files.length > MAX_MANIFEST_FILES
+  const listed = capped ? files.slice(0, MAX_MANIFEST_FILES) : files
+  return listed
+    .map((f) => `- ${f} — ${FILE_KIND_POLICY[classifyFile(f)]}`)
+    .concat(capped ? [`- …${files.length - MAX_MANIFEST_FILES} more files — not listed individually`] : [])
+    .join("\n")
 }
 
 const LANG_BY_EXT: Record<string, string> = {
@@ -338,7 +356,7 @@ export function detectLanguage(files: string[]): string {
 
 export function buildPrompt(scope: { files: string[]; diff?: string }, specId: SpecId): string {
   const spec = REVIEW_SPECS[assertSpecId(specId)]
-  const filesText = scope.files.map((f) => `- ${f}`).join("\n")
+  const filesText = renderFileList(scope.files)
   const { text: rawDiff, truncated, visibleFiles } = truncateDiff(scope.diff ?? "")
   const diffSection = scope.diff ? `Changes under review (diff):\n\n${encloseDiff(redactSecrets(rawDiff))}` : ""
   const omittedFiles = scope.files.filter((f) => !visibleFiles.has(f))
@@ -619,7 +637,7 @@ export interface JudgeFindingInput {
 
 export function buildJudgePrompt(scope: { files: string[]; diff?: string }, findings: JudgeFindingInput[]): string {
   const { text: rawDiff } = truncateDiff(scope.diff ?? "")
-  const filesText = scope.files.map((f) => `- ${f}`).join("\n")
+  const filesText = renderFileList(scope.files)
   const findingsText = findings
     .map(
       (f) =>

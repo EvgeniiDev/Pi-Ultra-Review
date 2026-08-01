@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises"
+import { readFile, realpath, stat } from "node:fs/promises"
 import { isAbsolute, relative, resolve } from "node:path"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -24,34 +24,51 @@ const DEFAULT_CHUNK = 300
  * - по умолчанию возвращаются первые 300 строк с номерами + подсказка о чанках.
  */
 export async function readFileSafely(root: string, path: string, startLine?: number, endLine?: number): Promise<ReadResult> {
-  const resolved = resolve(root, path)
-  const rel = relative(root, resolved)
-  if (rel.startsWith("..") || isAbsolute(rel)) {
-    return { ok: false, error: `path escapes repo root: ${path}` }
+  // Симлинк-защита: resolve()/relative() — лексика, а stat/readFile идут по
+  // симлинкам. Прогоняем оба пути через realpath и проверяем СОДЕРЖАНИЕ
+  // (real-путь) внутри real-root — иначе симлинк evil -> ~/.ssh/id_rsa
+  // внутри репо вытащит наружу секреты.
+  let realRoot: string
+  try {
+    realRoot = await realpath(root)
+  } catch {
+    return { ok: false, error: `repo root unavailable: ${root}` }
   }
-  const segs = rel.split(/[\\/]/)
-  if (segs.some((s) => BLOCKED_DIRS.has(s))) {
-    return { ok: false, error: `path blocked: ${rel}` }
+
+  const resolved = resolve(root, path)
+  let real: string
+  try {
+    real = await realpath(resolved)
+  } catch {
+    return { ok: false, error: `cannot resolve: ${path}` }
+  }
+
+  const realRel = relative(realRoot, real)
+  if (realRel.startsWith("..") || isAbsolute(realRel)) {
+    return { ok: false, error: `path escapes repo root (symlink?): ${path}` }
+  }
+  if (realRel.split(/[\\/]/).some((s) => BLOCKED_DIRS.has(s))) {
+    return { ok: false, error: `path blocked: ${realRel}` }
   }
 
   let st
   try {
-    st = await stat(resolved)
+    st = await stat(real)
   } catch {
-    return { ok: false, error: `cannot stat: ${rel}` }
+    return { ok: false, error: `cannot stat: ${realRel}` }
   }
-  if (st.size === 0) return { ok: true, text: `${rel} (empty file)` }
+  if (st.size === 0) return { ok: true, text: `${realRel} (empty file)` }
   if (st.size > MAX_FILE_BYTES) {
     return { ok: false, error: `file too large (${Math.round(st.size / 1024)} KB > 100 KB)` }
   }
 
   let content: string
   try {
-    content = await readFile(resolved, "utf-8")
+    content = await readFile(real, "utf-8")
   } catch (err) {
     return { ok: false, error: `read failed: ${(err as Error).message}` }
   }
-  if (content.includes("\u0000")) return { ok: false, error: `binary file: ${rel}` }
+  if (content.includes("\u0000")) return { ok: false, error: `binary file: ${realRel}` }
 
   const lines = content.split("\n")
   let start = Math.max(1, startLine ?? 1)
@@ -63,7 +80,7 @@ export async function readFileSafely(root: string, path: string, startLine?: num
   const body = slice.map((l, i) => `${String(start + i).padStart(width)}| ${l}`).join("\n")
   const more = lines.length - end
   const hint = more > 0 ? `\n…[${more} more lines; file has ${lines.length} total — read with startLine/endLine]` : ""
-  return { ok: true, text: `${rel} (${lines.length} lines)\n${body}${hint}` }
+  return { ok: true, text: `${realRel} (${lines.length} lines)\n${body}${hint}` }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

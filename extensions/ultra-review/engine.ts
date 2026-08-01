@@ -369,7 +369,9 @@ export async function executeReview(
   deps.ui.setStatus("ultra-review", undefined)
 
   const ts = timestamp()
-  const lines = [`# Code Review: ${branch} — ${ts}`, "", `**Scope:** ${cfg.scope.label}`, `**Prompt v${PROMPT_VERSION}**`, `**Files:** ${files.join(", ") || "N/A"}`, ""]
+  const MAX_REPORT_FILES = 50
+  const filesLine = files.length > MAX_REPORT_FILES ? `${files.slice(0, MAX_REPORT_FILES).join(", ")} (+${files.length - MAX_REPORT_FILES} more)` : files.join(", ")
+  const lines = [`# Code Review: ${branch} — ${ts}`, "", `**Scope:** ${cfg.scope.label}`, `**Prompt v${PROMPT_VERSION}**`, `**Files:** ${filesLine || "N/A"}`, ""]
   let approved = 0, rejected = 0, errors = 0, needsContext = 0
   const allFindings: JudgedFinding[] = []
   let idx = 1
