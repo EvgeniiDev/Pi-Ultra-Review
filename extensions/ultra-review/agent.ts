@@ -1,5 +1,5 @@
-import { readFile, realpath, stat } from "node:fs/promises"
-import { isAbsolute, relative, resolve } from "node:path"
+import { readFile, readdir, realpath, stat } from "node:fs/promises"
+import { isAbsolute, join, relative, resolve } from "node:path"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Агентный слой: ревьюер читает файлы сам, по частям, через read_file.
@@ -18,6 +18,10 @@ const DEFAULT_CHUNK = 500
 // Суммарный объём результатов чтения в истории агента: больше — контекст
 // раздувается на каждой итерации, слабые модели начинают сыпаться.
 const MAX_AGENT_CONTEXT_CHARS = 150_000
+const MAX_SEARCH_MATCHES = 20
+const MAX_SEARCH_RESULT_CHARS = 8 * 1024
+const MAX_QUERY_LEN = 200
+const SNIPPET_LEN = 120
 
 /**
  * Чтение файла в песочнице репозитория:
@@ -74,7 +78,7 @@ export async function readFileSafely(root: string, path: string, startLine?: num
   if (content.includes("\u0000")) return { ok: false, error: `binary file: ${realRel}` }
 
   const lines = content.split("\n")
-  let start = Math.max(1, startLine ?? 1)
+  const start = Math.max(1, startLine ?? 1)
   let end = Math.min(lines.length, endLine ?? (startLine ? start + DEFAULT_CHUNK - 1 : DEFAULT_CHUNK))
   if (start > end) end = start
   const slice = lines.slice(start - 1, end)
@@ -86,10 +90,143 @@ export async function readFileSafely(root: string, path: string, startLine?: num
   return { ok: true, text: `${realRel} (${lines.length} lines)\n${body}${hint}` }
 }
 
+/**
+ * Grep-поиск по репозиторию (подстрока, case-insensitive). Песочница как у
+ * readFileSafely: realpath-контейнмент фильтра, BLOCKED_DIRS, пропуск
+ * симлинков (не ходим за root), бинарников и файлов > 100 КБ.
+ * Возвращает до MAX_SEARCH_MATCHES совпадений path:line: snippet.
+ */
+export async function searchFilesSafely(root: string, query: string, pathFilter?: string): Promise<ReadResult> {
+  const q = query.trim().toLowerCase()
+  if (!q) return { ok: false, error: "query required" }
+  if (q.length > MAX_QUERY_LEN) return { ok: false, error: `query too long (> ${MAX_QUERY_LEN} chars)` }
+
+  let realRoot: string
+  try {
+    realRoot = await realpath(root)
+  } catch {
+    return { ok: false, error: `repo root unavailable: ${root}` }
+  }
+
+  // Фильтр-поддерево: тот же контейнмент, что у read_file.
+  let filterReal: string | null = null
+  let filterIsFile = false
+  if (pathFilter) {
+    let real: string
+    try {
+      real = await realpath(resolve(root, pathFilter))
+    } catch {
+      return { ok: false, error: `cannot resolve: ${pathFilter}` }
+    }
+    const rel = relative(realRoot, real)
+    if (rel.startsWith("..") || isAbsolute(rel)) {
+      return { ok: false, error: `path escapes repo root (symlink?): ${pathFilter}` }
+    }
+    filterReal = real
+    try {
+      filterIsFile = (await stat(real)).isFile()
+    } catch {
+      return { ok: false, error: `cannot stat: ${pathFilter}` }
+    }
+  }
+
+  const matches: Array<{ path: string; line: number; snippet: string }> = []
+  let total = 0
+  let shown = 0
+
+  const addFile = async (abs: string, relPath: string) => {
+    let st
+    try {
+      st = await stat(abs)
+    } catch {
+      return
+    }
+    if (st.size > MAX_FILE_BYTES) return
+    let content: string
+    try {
+      content = await readFile(abs, "utf-8")
+    } catch {
+      return
+    }
+    if (content.includes("\u0000")) return
+    const lines = content.split("\n")
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].toLowerCase().includes(q)) continue
+      total++
+      if (shown >= MAX_SEARCH_MATCHES) continue
+      shown++
+      matches.push({ path: relPath.split(/[\\/]/).join("/"), line: i + 1, snippet: lines[i].trim().slice(0, SNIPPET_LEN) })
+    }
+  }
+
+  const walk = async (abs: string, relPath: string) => {
+    // Пропускаем поддеревья, которые не содержат фильтр и не лежат внутри него:
+    // идём по пути от root вниз до filterReal, дальше — только внутри filterReal.
+    if (filterReal && abs !== filterReal && !filterReal.startsWith(abs + "/") && !filterReal.startsWith(abs + "\\") && !abs.startsWith(filterReal + "/") && !abs.startsWith(filterReal + "\\")) return
+    let entries
+    try {
+      entries = await readdir(abs, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const e of entries) {
+      if (e.isSymbolicLink()) continue // не ходим по симлинкам за root
+      const childAbs = join(abs, e.name)
+      const childRel = join(relPath, e.name)
+      if (e.isDirectory()) {
+        if (BLOCKED_DIRS.has(e.name)) continue
+        await walk(childAbs, childRel)
+      } else if (e.isFile()) {
+        await addFile(childAbs, childRel)
+      }
+    }
+  }
+
+  if (filterReal && filterIsFile) {
+    // Файловый фильтр минует walk: контейнмент проверяется напрямую, как в
+    // readFileSafely — включая BLOCKED_DIRS по сегментам относительного пути.
+    const filterRel = relative(realRoot, filterReal)
+    if (filterRel.split(/[\\/]/).some((s) => BLOCKED_DIRS.has(s))) {
+      return { ok: false, error: `path blocked: ${filterRel}` }
+    }
+    await addFile(filterReal, filterRel.split(/[\\/]/).join("/"))
+  } else {
+    await walk(realRoot, "")
+  }
+
+  matches.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : a.line - b.line))
+  const lines = [`search: "${query}" — ${total} match(es)${total > matches.length ? `, showing first ${matches.length}` : ""}`]
+  for (const m of matches) {
+    const line = `${m.path}:${m.line}: ${m.snippet}`
+    if (lines.join("\n").length + line.length + 1 > MAX_SEARCH_RESULT_CHARS) break
+    lines.push(line)
+  }
+  return { ok: true, text: lines.join("\n") }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Тул-цикл: chat может быть вызван несколько раз, между вызовами модель
 // получает результаты read_file и решает, читать дальше или выносить вердикт.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Диспетчер тулов агента: read_file (с записью прочитанных путей для
+ * валидации находок) и search_files (только для simplify-спека).
+ */
+export function makeExecutor(root: string, readFiles: Set<string>): AgentExecutor {
+  return async (call) => {
+    const args = call.arguments ?? {}
+    const name = call.name ?? ""
+    if (name === "search_files") {
+      const query = String(args.query ?? "")
+      const path = args.path === undefined ? undefined : String(args.path)
+      return searchFilesSafely(root, query, path)
+    }
+    const path = String(args.path ?? "")
+    if (path) readFiles.add(path)
+    return readFileSafely(root, path, args.startLine as number | undefined, args.endLine as number | undefined)
+  }
+}
 
 export interface AgentToolCall {
   id?: string
@@ -173,8 +310,8 @@ export async function runAgentLoop(
       messages.push({
         role: "toolResult",
         toolCallId: "limit",
-        toolName: "read_file",
-        content: [{ type: "text", text: "No more reads allowed. Output your final verdict now." }],
+        toolName: "tool",
+        content: [{ type: "text", text: "No more tool calls allowed. Output your final verdict now." }],
         isError: true,
         timestamp: Date.now(),
       })
@@ -188,7 +325,7 @@ export async function runAgentLoop(
       messages.push({
         role: "toolResult",
         toolCallId: "limit",
-        toolName: "read_file",
+        toolName: "tool",
         content: [{ type: "text", text: "Read budget reached. Output your final verdict now based on what you have." }],
         isError: true,
         timestamp: Date.now(),

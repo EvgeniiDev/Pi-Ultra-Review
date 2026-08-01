@@ -1,8 +1,8 @@
 import { complete, type UserMessage } from "@earendil-works/pi-ai/compat"
 import type { Api, Message, Model, Tool } from "@earendil-works/pi-ai"
 import { Type } from "@sinclair/typebox"
-import { readFileSafely, runAgentLoop, type AgentChat, type AgentTurn } from "./agent.ts"
-import { EMPTY_RESPONSE_RETRIES, MODEL_MAX_TOKENS, MODEL_TEMPERATURE, RETRY_DELAY_MS } from "./constants.ts"
+import { makeExecutor, runAgentLoop, type AgentChat, type AgentTurn } from "./agent.ts"
+import { EMPTY_RESPONSE_RETRIES, MODEL_MAX_TOKENS, MODEL_TEMPERATURE, RETRY_DELAY_MS, SIMPLIFY_MAX_ITERATIONS, SIMPLIFY_MAX_TOOL_CALLS } from "./constants.ts"
 import { retryOnEmpty, retryOnFailure } from "./retry.ts"
 import type { PiModelLike, PiRegistryLike } from "./types.ts"
 
@@ -21,6 +21,26 @@ export function makeReadTool(): Tool {
       endLine: Type.Optional(Type.Number({ description: "1-based last line (default: first 300 lines)" })),
     }),
   }
+}
+
+export function makeSearchTool(): Tool {
+  return {
+    name: "search_files",
+    description:
+      "Search the repository for a substring (case-insensitive). Returns up to 20 matches as path:line: snippet plus the total match count. Use it to find existing helpers, duplicates, or similar code anywhere in the repository before flagging reuse or duplication, then read the candidates with read_file.",
+    parameters: Type.Object({
+      query: Type.String({ description: "Substring to search for (case-insensitive)" }),
+      path: Type.Optional(Type.String({ description: "Repository-relative directory or file to restrict the search to (default: repository root)" })),
+    }),
+  }
+}
+
+/** Per-spec опции агента: simplify получает search_files и больший бюджет. */
+export function agentOptionsForSpec(specId: string): { extraTools: Tool[]; maxIterations: number; maxToolCalls: number } {
+  if (specId === "simplify") {
+    return { extraTools: [makeSearchTool()], maxIterations: SIMPLIFY_MAX_ITERATIONS, maxToolCalls: SIMPLIFY_MAX_TOOL_CALLS }
+  }
+  return { extraTools: [], maxIterations: 8, maxToolCalls: 30 }
 }
 
 /** Один ход диалога через провайдерский слой pi (авторизация pi, нормализация pi). */
@@ -74,25 +94,24 @@ export async function runAgent(
   prompt: string,
   root: string,
   signal?: AbortSignal,
+  opts: { extraTools?: Tool[]; maxIterations?: number; maxToolCalls?: number } = {},
 ): Promise<{ text: string; toolCalls: number; readFiles: string[] }> {
   const label = `${model.provider}/${model.id}`
-  const tools: Tool[] = [makeReadTool()]
+  const tools: Tool[] = [makeReadTool(), ...(opts.extraTools ?? [])]
   const initialMessages: UserMessage[] = [
     { role: "user", content: [{ type: "text", text: "Review the files in scope and output your verdict." }], timestamp: Date.now() },
   ]
   const readFiles = new Set<string>()
-  const executor = async (call: { id?: string; name?: string; arguments?: Record<string, unknown> }) => {
-    const args = call.arguments ?? {}
-    const path = String(args.path ?? "")
-    if (path) readFiles.add(path)
-    return readFileSafely(root, path, args.startLine as number | undefined, args.endLine as number | undefined)
-  }
+  const executor = makeExecutor(root, readFiles)
 
   let toolCalls = 0
   const attempt = async (): Promise<string> => {
     const chat: AgentChat = (messages, toolsList, s) =>
       chatViaPi(registry, model, prompt, messages, toolsList as Tool[], s)
-    const loop = await runAgentLoop(chat, initialMessages, tools, executor, { maxIterations: 8 }, signal)
+    const loop = await runAgentLoop(chat, initialMessages, tools, executor, {
+      maxIterations: opts.maxIterations ?? 8,
+      maxToolCalls: opts.maxToolCalls ?? 30,
+    }, signal)
     toolCalls = loop.toolCalls
     return loop.text
   }

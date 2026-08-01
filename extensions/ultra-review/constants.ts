@@ -3,7 +3,7 @@ import type { Severity, SpecId } from "./types.ts"
 export const MAX_DIFF_CHARS = 20_000
 
 /** Версия промтов для отладки/evals: меняй при каждом изменении контракта. */
-export const PROMPT_VERSION = "2026-08-02.json"
+export const PROMPT_VERSION = "2026-08-03.json"
 
 // Параллельность ревью: не больше PROVIDER_MAX_CONCURRENCY одновременных
 // запросов к одному провайдеру и не больше GLOBAL_MAX_CONCURRENCY всего,
@@ -21,6 +21,10 @@ export const MODEL_MAX_TOKENS = 8192
 export const EMPTY_RESPONSE_RETRIES = 2
 export const RETRY_DELAY_MS = 1500
 
+// Бюджет агента simplify: циклы «поиск → чтение кандидата → подтверждение».
+export const SIMPLIFY_MAX_ITERATIONS = 10
+export const SIMPLIFY_MAX_TOOL_CALLS = 40
+
 export const SPECIALIZATIONS: Record<SpecId, string> = {
   security: "Security (vuln, injection, auth, secrets, OWASP)",
   correctness: "Correctness (logic bugs, edge cases, race conditions)",
@@ -28,6 +32,7 @@ export const SPECIALIZATIONS: Record<SpecId, string> = {
   maintainability: "Maintainability (duplication, complexity, dead code)",
   style: "Style & Idiom (conventions, naming, readability)",
   best_practices: "Best Practices (SOLID, DRY, error propagation)",
+  simplify: "Simplify (reuse, dead code, thin wrappers, cleanup)",
 }
 
 // Платные модели, которые всегда показываем в мастере помимо бесплатных.

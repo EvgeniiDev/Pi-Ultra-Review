@@ -1,0 +1,52 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { makeExecutor, runAgentLoop } from "./agent.ts"
+import { agentOptionsForSpec, makeReadTool, makeSearchTool } from "./pi-call.ts"
+
+let root: string
+beforeAll(() => {
+  root = mkdtempSync(join(tmpdir(), "ur-exec-"))
+  mkdirSync(join(root, "src"), { recursive: true })
+  writeFileSync(join(root, "src", "a.ts"), "const needle = 1\n")
+})
+afterAll(() => rmSync(root, { recursive: true, force: true }))
+
+test("makeExecutor dispatches read_file and search_files by name", async () => {
+  const readFiles = new Set<string>()
+  const exec = makeExecutor(root, readFiles)
+  const r1 = await exec({ name: "read_file", arguments: { path: "src/a.ts" } })
+  expect(r1.ok).toBe(true)
+  expect(readFiles.has("src/a.ts")).toBe(true)
+  const r2 = await exec({ name: "search_files", arguments: { query: "needle", path: "src" } })
+  expect(r2.ok).toBe(true)
+  expect((r2 as { ok: true; text: string }).text).toContain("src/a.ts:1:")
+})
+
+test("runAgentLoop executes search_files through makeExecutor", async () => {
+  const exec = makeExecutor(root, new Set<string>())
+  let n = 0
+  const chat = async () => {
+    n++
+    if (n === 1) {
+      return { assistantMessage: {}, content: [{ type: "toolCall", id: "t1", name: "search_files", arguments: { query: "needle" } }], stopReason: "toolUse" }
+    }
+    return { assistantMessage: {}, content: [{ type: "text", text: "final" }], stopReason: "end_turn" }
+  }
+  const res = await runAgentLoop(chat, [], [makeReadTool(), makeSearchTool()], exec, { maxIterations: 4 })
+  expect(res.text).toBe("final")
+  expect(res.toolCalls).toBe(1)
+})
+
+test("agentOptionsForSpec gives search tool and budget to simplify only", () => {
+  const s = agentOptionsForSpec("simplify")
+  expect(s.extraTools).toHaveLength(1)
+  expect(s.extraTools[0].name).toBe("search_files")
+  expect(s.maxIterations).toBe(10)
+  expect(s.maxToolCalls).toBe(40)
+  const o = agentOptionsForSpec("security")
+  expect(o.extraTools).toEqual([])
+  expect(o.maxIterations).toBe(8)
+  expect(o.maxToolCalls).toBe(30)
+})

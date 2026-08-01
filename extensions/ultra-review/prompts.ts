@@ -217,6 +217,55 @@ export const REVIEW_SPECS: Record<SpecId, ReviewSpec> = {
     ],
     allowedSeverities: ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
   },
+
+  simplify: {
+    role: "code simplification specialist performing an active cleanup review",
+    mission:
+      "Identify code that can be safely deleted, inlined, refactored, or parallelized, and reuse opportunities across the whole repository (not only the diff). Flag only when a real consequence exists — 'shorter/cleaner' is not a consequence.",
+    investigate: [
+      "A newly written helper that duplicates an existing one: search utility directories, shared modules, and files adjacent to the change; name the existing symbol and file in reuseTarget.",
+      "Hand-rolled logic that an existing utility already covers: manual string manipulation, manual path handling, custom env checks, ad-hoc type guards.",
+      "Reinventing a primitive the language, standard library, or framework already provides.",
+      "Rename-only wrapper: foo() only calls bar() with the same inputs; inline it unless foo is a real public/domain concept.",
+      "Constructor/factory wrapper: createX(args) only returns new X(args); inline construction unless the factory selects implementations or enforces policy.",
+      "Single-call-site helper with no meaningful name compression; inline it, especially one-line formatting, parsing, or path helpers.",
+      "Test-only export: a helper exported solely so tests can call a thin wrapper; test the real helper or observable behavior instead.",
+      "Pass-through class method that only delegates to a module-level function and is not required by an interface.",
+      "Platform-specific alias module that merely re-exports a generic helper under a different name.",
+      "Duplicated write APIs: several saveFooConfig/saveBarConfig patching different fields of the same file; consolidate into one updateSettings(patch)-style API.",
+      "Abstractions created 'for future use' that are never used.",
+      "Thin-wrapper discipline: keep a wrapper when it protects a public API, documents a domain boundary, centralizes cross-cutting behavior, or isolates an unstable dependency. Do NOT flag wrappers whose only consequence is one extra line; flag them when they create real maintenance cost: multiple ways to do the same operation, unclear source of truth, misleading domain boundaries, or duplicated tests for delegated behavior.",
+      "Missed concurrency: independent operations run sequentially when they could run in parallel (sequential awaits → Promise.all).",
+      "Recurring no-op updates: state writes inside loops, intervals, or handlers that fire unconditionally — add a change-detection guard.",
+      "Unnecessary existence checks: pre-checking file/resource existence before operating (TOCTOU) — operate directly and handle the error.",
+      "Overly broad operations: reading a whole file when a slice would do, loading all items when filtering for one.",
+      "Redundant state: state duplicating other state, cached values that could be derived, observers that could be direct calls.",
+      "Parameter sprawl: piling new parameters onto a function instead of restructuring.",
+      "Stringly-typed code: raw strings where an existing constant, enum, or union exists.",
+      "Unnecessary wrapper elements: JSX/DOM wrappers that add no layout value.",
+      "Useless comments: comments restating WHAT the code does, narrating the change, or referencing the task/caller — keep only non-obvious WHY.",
+      "Near-duplicate blocks anywhere in the codebase (not only in the diff) that should share an abstraction. Use search_files and read the candidates; put the new code's location in file/line and the duplicate's location in evidence/fix.",
+    ],
+    ignore: [
+      "Necessary code just because it is simple.",
+      "Error-handling and security logic — flag with extreme care; security-impact issues belong to the security perspective.",
+      "Code that looks unused but is called via reflection, eval, or runtime registration.",
+      "Database migration files.",
+      "Generated files unless the generator template itself changed.",
+      "Purely stylistic issues (naming, formatting) — those belong to the style perspective.",
+      "Pure defects whose primary impact belongs to another perspective — primary-impact rule applies.",
+      "Rewrites unrelated to the changed code; taste-based restructuring without material maintenance cost.",
+      "One extra line as the sole consequence.",
+    ],
+    severityGuidance: [
+      "severity = value of the cleanup, not confidence in removal safety (that is what risk is for).",
+      "LOW: localized cleanup with clear, bounded benefit.",
+      "MEDIUM: concrete maintenance cost — drifting duplicates, multiple ways to do one thing, hidden dependency.",
+      "HIGH: rare; actively harmful structure that materially raises defect probability or change cost.",
+      "CRITICAL: not applicable; do not emit CRITICAL simplify findings.",
+    ],
+    allowedSeverities: ["LOW", "MEDIUM", "HIGH"],
+  },
 }
 
 export function renderBullets(items: readonly string[]): string {
@@ -426,7 +475,12 @@ ${diffSection}
 
 # READING FILES
 
-You have one tool: read_file(path, startLine?, endLine?).
+${specId === "simplify"
+  ? `You have two tools:
+
+- read_file(path, startLine?, endLine?) — read files in chunks. Returns the requested lines with numbers and the file's total line count.
+- search_files(query, path?) — find existing helpers, duplicates, or similar code anywhere in the repository. Use it BEFORE flagging reuse or duplication, then read the candidates with read_file to confirm.`
+  : `You have one tool: read_file(path, startLine?, endLine?).`}
 
 - Read the files under review as needed. Do not guess about code you have not
   read.
@@ -560,7 +614,7 @@ Schema:
   "context": "FULL | PARTIAL | INSUFFICIENT",
   "findings": [
     {
-      "severity": "LOW | MEDIUM | HIGH | CRITICAL",
+      "severity": "${spec.allowedSeverities.join(" | ")}",
       "category": "string",
       "file": "string",
       "line": number,
@@ -570,7 +624,12 @@ Schema:
       "trigger": "string",
       "impact": "string",
       "fix": "string",
-      "evidence": "string"
+      "evidence": "string"${specId === "simplify"
+        ? `,
+      "risk": "safe | confirm | review",
+      "action": "delete | inline | refactor | parallelize",
+      "reuseTarget": "string"`
+        : ""}
     }
   ],
   "omitted_findings_count": number
@@ -584,6 +643,11 @@ Field rules:
 - findings: at most 8, highest severity and certainty first. If more valid
   findings exist, report the strongest and set omitted_findings_count.
 - severity: only from the allowed set: ${spec.allowedSeverities.join(", ")}.
+${specId === "simplify"
+  ? `- risk: "safe" | "confirm" | "review" — how confidently the cleanup can be applied. safe = apply without question (dead code, debug remnants); confirm = apply after the user confirms; review = the user should look first. REQUIRED on every finding.
+- action: "delete" | "inline" | "refactor" | "parallelize" — what to do with the flagged code. REQUIRED on every finding.
+- reuseTarget: "Symbol in path/to/file.ts" — for reuse findings, the existing symbol and file to swap to; omit otherwise.`
+  : ""}
 - category: a short taxonomy id, e.g. command_injection, n_plus_one,
   missing_timeout, null_dereference, misleading_name, unbounded_fan_out.
 - file: the exact path you read, as listed above.
@@ -631,6 +695,8 @@ export interface JudgeFindingInput {
   impact?: string
   fix?: string
   evidence?: string
+  risk?: string
+  action?: string
   agent: string
   spec: string
 }
@@ -641,7 +707,7 @@ export function buildJudgePrompt(scope: { files: string[]; diff?: string }, find
   const findingsText = findings
     .map(
       (f) =>
-        `${f.idx}. [${f.severity}] ${f.file}:${f.line}${f.lineEnd && f.lineEnd !== f.line ? `-${f.lineEnd}` : ""} (${f.side ?? "new"}) — ${f.title}${f.trigger ? ` | trigger: ${f.trigger}` : ""}${f.evidence ? ` | evidence: ${f.evidence}` : ""} (agent: ${f.agent}, spec: ${f.spec})`,
+        `${f.idx}. [${f.severity}] ${f.file}:${f.line}${f.lineEnd && f.lineEnd !== f.line ? `-${f.lineEnd}` : ""} (${f.side ?? "new"}) — ${f.title}${f.trigger ? ` | trigger: ${f.trigger}` : ""}${f.evidence ? ` | evidence: ${f.evidence}` : ""}${f.risk && f.action ? ` | risk: ${f.risk}, action: ${f.action}` : ""} (agent: ${f.agent}, spec: ${f.spec})`,
     )
     .join("\n")
 
@@ -702,6 +768,11 @@ For every finding idx assign exactly one verdict:
 6. Severity calibration: critical requires a concrete exploit/dataflow trace;
    high requires reachability in real code paths; speculative bugs cap at
    medium; stylistic issues without a defect cap at low.
+7. Action/risk consistency: delete/inline flagged on a public API, security
+   boundary, or reflection-called code is a FALSE_POSITIVE or DOWNGRADE;
+   severity above LOW combined with risk=safe and action=delete is suspicious
+   (dead code is LOW impact) — downgrade unless the evidence shows real
+   impact.
 
 # OUTPUT
 

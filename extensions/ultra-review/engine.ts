@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { GLOBAL_MAX_CONCURRENCY, PROMPT_VERSION, PROVIDER_MAX_CONCURRENCY } from "./constants.ts"
 import { git } from "./git.ts"
 import { buildJudgePrompt, buildPrompt, REVIEW_SPECS } from "./prompts.ts"
-import { assertSpecId, type PiModelLike, type ReviewConfig, type Severity, type UiLike } from "./types.ts"
+import { assertSpecId, type PiModelLike, type ReviewConfig, type Severity, type SimplifyAction, type SimplifyRisk, type UiLike } from "./types.ts"
 
 export interface ReviewDeps {
   ui: UiLike
@@ -11,7 +11,7 @@ export interface ReviewDeps {
    * Вызов модели: в проде это runAgent(ctx.modelRegistry, ...), в тестах — заглушка.
    * readFiles = пути, которые агент реально читал (для валидации находок).
    */
-  callModel(model: PiModelLike, prompt: string, signal?: AbortSignal): Promise<{ text: string; toolCalls: number; readFiles: string[] }>
+  callModel(model: PiModelLike, prompt: string, specId: string, signal?: AbortSignal): Promise<{ text: string; toolCalls: number; readFiles: string[] }>
 }
 
 export interface TaskResult {
@@ -36,6 +36,9 @@ export interface ValidatedFinding {
   impact?: string
   fix?: string
   evidence?: string
+  risk?: SimplifyRisk
+  action?: SimplifyAction
+  reuseTarget?: string
 }
 
 /** Находка с метаданными задачи — то, что видит судья. */
@@ -111,6 +114,9 @@ interface JsonFinding {
   impact?: unknown
   fix?: unknown
   evidence?: unknown
+  risk?: unknown
+  action?: unknown
+  reuseTarget?: unknown
 }
 interface JsonReviewOutput {
   context?: unknown
@@ -166,7 +172,7 @@ interface ProcessedTask {
   malformed?: string
 }
 
-function processTaskOutput(output: string, specId: string, scopeFiles: Set<string>, readFiles: Set<string>): ProcessedTask {
+export function processTaskOutput(output: string, specId: string, scopeFiles: Set<string>, readFiles: Set<string>): ProcessedTask {
   const parsed = parseReviewOutput(output)
   if (!parsed.ok) return { context: "INSUFFICIENT", findings: [], rejectedCount: 0, malformed: parsed.reason }
 
@@ -176,6 +182,11 @@ function processTaskOutput(output: string, specId: string, scopeFiles: Set<strin
   const findings: ValidatedFinding[] = []
   let rejectedCount = 0
 
+  // Для simplify риск/действие обязательны: находка без валидной пары — мусор.
+  const RISKS = new Set(["safe", "confirm", "review"])
+  const ACTIONS = new Set(["delete", "inline", "refactor", "parallelize"])
+  const isSimplify = specId === "simplify"
+
   for (const f of parsed.output.findings ?? []) {
     const file = typeof f.file === "string" ? f.file.trim() : ""
     const line = typeof f.line === "number" && Number.isInteger(f.line) && f.line > 0 ? f.line : null
@@ -184,6 +195,19 @@ function processTaskOutput(output: string, specId: string, scopeFiles: Set<strin
     if (!file || line === null) { rejectedCount++; continue } // нет файла/строки
     if (!(scopeFiles.has(file) || readFiles.has(file))) { rejectedCount++; continue } // файл не в скоупе и не читался
     if (!["LOW", "MEDIUM", "HIGH", "CRITICAL"].includes(sev)) { rejectedCount++; continue } // неизвестная severity
+
+    let risk: SimplifyRisk | undefined
+    let action: SimplifyAction | undefined
+    let reuseTarget: string | undefined
+    if (isSimplify) {
+      const rawRisk = typeof f.risk === "string" ? f.risk.toLowerCase() : ""
+      const rawAction = typeof f.action === "string" ? f.action.toLowerCase() : ""
+      if (!RISKS.has(rawRisk) || !ACTIONS.has(rawAction)) { rejectedCount++; continue }
+      risk = rawRisk as SimplifyRisk
+      action = rawAction as SimplifyAction
+      const rt = typeof f.reuseTarget === "string" ? f.reuseTarget.trim() : ""
+      reuseTarget = rt || undefined
+    }
 
     const finalSev = allowed.has(sev as Severity) ? (sev as Severity) : maxAllowed
     findings.push({
@@ -198,6 +222,9 @@ function processTaskOutput(output: string, specId: string, scopeFiles: Set<strin
       impact: typeof f.impact === "string" ? f.impact : undefined,
       fix: typeof f.fix === "string" ? f.fix : undefined,
       evidence: typeof f.evidence === "string" ? f.evidence : undefined,
+      risk,
+      action,
+      reuseTarget,
     })
   }
 
@@ -323,7 +350,9 @@ export async function executeReview(
   let branch = "unknown"
   try {
     branch = git("git rev-parse --abbrev-ref HEAD", cwd) || "unknown"
-  } catch {}
+  } catch {
+    // git недоступен (не репозиторий?) — ветка останется "unknown".
+  }
 
   const files = cfg.scope.files
   const scopeFiles = new Set(files)
@@ -340,7 +369,7 @@ export async function executeReview(
     tasks.map(({ model, spec }) =>
       limiter.run(model.provider, async () => {
         try {
-          const out = await deps.callModel(model, buildPrompt(cfg.scope, spec), signal)
+          const out = await deps.callModel(model, buildPrompt(cfg.scope, spec), spec, signal)
           return {
             modelName: `${model.provider}/${model.id}`,
             specName: spec,
@@ -398,8 +427,10 @@ export async function executeReview(
     } else {
       for (const f of processed.findings) {
         const where = `${f.file}:${f.line}${f.lineEnd && f.lineEnd !== f.line ? `-${f.lineEnd}` : ""}`
-        const parts = [`- [${f.severity}] ${where}${f.side ? ` (${f.side})` : ""} — ${f.title}`]
+        const riskAction = f.risk && f.action ? ` (risk: ${f.risk}, action: ${f.action})` : ""
+        const parts = [`- [${f.severity}] ${where}${f.side ? ` (${f.side})` : ""} — ${f.title}${riskAction}`]
         if (f.category) parts.push(`category: ${f.category}`)
+        if (f.reuseTarget) parts.push(`reuse: ${f.reuseTarget}`)
         if (f.trigger) parts.push(`trigger: ${f.trigger}`)
         if (f.evidence) parts.push(`evidence: ${f.evidence}`)
         lines.push(parts.join("\n  "))
@@ -407,7 +438,7 @@ export async function executeReview(
       }
     }
     if (processed.rejectedCount > 0) {
-      lines.push(`> ⚠️ ${processed.rejectedCount} finding(s) rejected: missing file/line, file not in scope/read, or invalid severity.`)
+      lines.push(`> ⚠️ ${processed.rejectedCount} finding(s) rejected: missing file/line, file not in scope/read, or invalid severity${r.specName === "simplify" ? ", or missing/invalid risk/action (simplify)" : ""}.`)
     }
     if (r.toolCalls === 0 && !processed.malformed) {
       lines.push("> ⚠️ Agent did not use read_file — reviewed from manifest/diff only.")
@@ -427,7 +458,7 @@ export async function executeReview(
       const judgeModel = cfg.models[0]
       deps.ui.setStatus("ultra-review", `Judge pass: validating ${allFindings.length} findings...`)
       try {
-        const out = await deps.callModel(judgeModel, buildJudgePrompt(cfg.scope, allFindings), signal)
+        const out = await deps.callModel(judgeModel, buildJudgePrompt(cfg.scope, allFindings), "judge", signal)
         const parsed = parseJudgeJson(out.text)
         if (parsed?.verdicts?.length) {
           const judged = applyJudge(parsed, allFindings, `${judgeModel.provider}/${judgeModel.id}`)

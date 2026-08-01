@@ -8,6 +8,7 @@ export const SPEC_IDS = [
   "maintainability",
   "style",
   "best_practices",
+  "simplify",
 ] as const
 
 export type SpecId = (typeof SPEC_IDS)[number]
@@ -23,6 +24,9 @@ export interface Scope {
 }
 
 export type Severity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+
+export type SimplifyRisk = "safe" | "confirm" | "review"
+export type SimplifyAction = "delete" | "inline" | "refactor" | "parallelize"
 
 export interface ReviewSpec {
   role: string
