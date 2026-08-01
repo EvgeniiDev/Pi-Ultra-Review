@@ -36,14 +36,24 @@ export async function chatViaPi(
   const auth = await registry.getApiKeyAndHeaders(fullModel)
   if (!auth.ok) throw new Error(`No credentials for ${model.provider}: ${auth.error ?? "unknown"}`)
 
-  const response = await complete(fullModel, { systemPrompt, messages: messages as Message[], tools }, {
-    apiKey: auth.apiKey,
-    headers: auth.headers,
-    env: auth.env,
+  // 429/rate-limit — временный сбой провайдера: ретраится ОДИН вызов complete
+  // (не весь агентный цикл — рестарт цикла на каждой попытке раздувает прогон).
+  const isRateLimit = (e: unknown) => /429|rate\s*limit/i.test((e as Error).message ?? "")
+  const response = await retryOnFailure(
+    `${model.provider}/${model.id}`,
+    () => complete(fullModel, { systemPrompt, messages: messages as Message[], tools }, {
+      apiKey: auth.apiKey,
+      headers: auth.headers,
+      env: auth.env,
+      signal,
+      temperature: MODEL_TEMPERATURE,
+      maxTokens: MODEL_MAX_TOKENS,
+    }),
+    isRateLimit,
+    2,
+    RETRY_DELAY_MS,
     signal,
-    temperature: MODEL_TEMPERATURE,
-    maxTokens: MODEL_MAX_TOKENS,
-  })
+  )
 
   if (response.stopReason === "aborted") throw new Error(`${model.provider}/${model.id} aborted`)
   if (response.stopReason === "error") {
@@ -89,16 +99,7 @@ export async function runAgent(
 
   let text: string
   try {
-    // 429/rate-limit — временный сбой провайдера: тот же вызов, ограниченный
-    // ретрай с backoff (не фолбэк!); пустой ответ ретраится как раньше.
-    const isRateLimit = (e: unknown) => /429|rate\s*limit/i.test((e as Error).message ?? "")
-    text = await retryOnEmpty(
-      label,
-      () => retryOnFailure(label, attempt, isRateLimit, 2, RETRY_DELAY_MS, signal),
-      EMPTY_RESPONSE_RETRIES,
-      RETRY_DELAY_MS,
-      signal,
-    )
+    text = await retryOnEmpty(label, attempt, EMPTY_RESPONSE_RETRIES, RETRY_DELAY_MS, signal)
   } catch (err) {
     if (signal?.aborted) throw err
     // Провайдер мог не принять tools или модель упала — без тихого деграда,

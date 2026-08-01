@@ -14,7 +14,10 @@ const BLOCKED_DIRS = new Set([
   ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".eggs",
 ])
 const MAX_FILE_BYTES = 100 * 1024
-const DEFAULT_CHUNK = 300
+const DEFAULT_CHUNK = 500
+// Суммарный объём результатов чтения в истории агента: больше — контекст
+// раздувается на каждой итерации, слабые модели начинают сыпаться.
+const MAX_AGENT_CONTEXT_CHARS = 150_000
 
 /**
  * Чтение файла в песочнице репозитория:
@@ -129,58 +132,93 @@ export function extractToolCalls(content: unknown[]): AgentToolCall[] {
  * Многошаговый диалог с моделью:
  * - вызывает chat, пока модель не перестанет запрашивать тулы;
  * - исполняет запросы read_file (параллельно) и возвращает результаты модели;
- * - ограничен по итерациям (maxIterations) и общему числу чтений (maxToolCalls);
- * - если лимит исчерпан — возвращает накопленный текст.
+ * - жёстко ограничен: maxIterations итераций, maxToolCalls чтений,
+ *   maxContextChars накопленного контекста;
+ * - на последней итерации тулы убираются (модель обязана ответить), если
+ *   финальный текст пуст — один nudging-вызов вместо рестарта всего цикла.
+ * Рестарт всего цикла на пустом ответе — главная причина "очень длинных"
+ * прогонов: каждая попытка заново читает все файлы.
  */
 export async function runAgentLoop(
   chat: AgentChat,
   initialMessages: unknown[],
   tools: unknown[],
   execute: AgentExecutor,
-  opts: { maxIterations?: number; maxToolCalls?: number } = {},
+  opts: { maxIterations?: number; maxToolCalls?: number; maxContextChars?: number } = {},
   signal?: AbortSignal,
 ): Promise<AgentLoopResult> {
-  const maxIterations = opts.maxIterations ?? 8
+  const maxIterations = opts.maxIterations ?? 6
   const maxToolCalls = opts.maxToolCalls ?? 30
+  const maxContextChars = opts.maxContextChars ?? MAX_AGENT_CONTEXT_CHARS
   const messages = [...initialMessages]
   let toolCalls = 0
+  let contextChars = 0
+  let forceFinish = false
   let text = ""
 
   for (let iteration = 0; iteration < maxIterations; iteration++) {
-    const turn = await chat(messages, tools, signal)
+    // Последняя итерация (или исчерпанный бюджет) — без тулов: модель обязана ответить.
+    const isLast = iteration === maxIterations - 1 || forceFinish
+    const turn = await chat(messages, isLast ? [] : tools, signal)
     const calls = extractToolCalls(turn.content)
     const textPart = extractText(turn.content)
     if (textPart) text = textPart
 
-    if (calls.length === 0) return { text, iterations: iteration + 1, toolCalls }
-
-    toolCalls += calls.length
-    messages.push(turn.assistantMessage)
-    if (toolCalls > maxToolCalls) {
+    if (calls.length === 0) {
+      return { text: textPart || text, iterations: iteration + 1, toolCalls }
+    }
+    if (isLast) {
+      // Модель всё ещё просит тулы, хотя их больше нет — уходим к nudging-финалу.
+      messages.push(turn.assistantMessage)
       messages.push({
         role: "toolResult",
         toolCallId: "limit",
         toolName: "read_file",
-        content: [{ type: "text", text: "Tool call limit reached. Finish with your verdict based on what you have read." }],
+        content: [{ type: "text", text: "No more reads allowed. Output your final verdict now." }],
+        isError: true,
+        timestamp: Date.now(),
+      })
+      break
+    }
+
+    toolCalls += calls.length
+    messages.push(turn.assistantMessage)
+    if (toolCalls > maxToolCalls || contextChars > maxContextChars) {
+      forceFinish = true
+      messages.push({
+        role: "toolResult",
+        toolCallId: "limit",
+        toolName: "read_file",
+        content: [{ type: "text", text: "Read budget reached. Output your final verdict now based on what you have." }],
         isError: true,
         timestamp: Date.now(),
       })
       continue
     }
 
-    const results = await Promise.all(
-      calls.map(async (c) => ({ c, res: await execute(c) })),
-    )
+    const results = await Promise.all(calls.map(async (c) => ({ c, res: await execute(c) })))
     for (const { c, res } of results) {
+      const payload = res.ok ? res.text : `ERROR: ${res.error}`
+      contextChars += payload.length
       messages.push({
         role: "toolResult",
         toolCallId: c.id ?? "tool",
         toolName: c.name ?? "read_file",
-        content: res.ok ? [{ type: "text", text: res.text }] : [{ type: "text", text: `ERROR: ${res.error}` }],
+        content: [{ type: "text", text: payload }],
         isError: !res.ok,
         timestamp: Date.now(),
       })
     }
+  }
+
+  // Финальный nudging-вызов без тулов вместо рестарта всего цикла.
+  if (!text.trim()) {
+    const nudge = await chat(
+      [...messages, { role: "user", content: [{ type: "text", text: "Output your final verdict JSON now based on what you have read." }], timestamp: Date.now() }],
+      [],
+      signal,
+    )
+    text = extractText(nudge.content)
   }
   return { text, iterations: maxIterations, toolCalls }
 }
