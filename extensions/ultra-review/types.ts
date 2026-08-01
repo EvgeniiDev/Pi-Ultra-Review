@@ -1,3 +1,6 @@
+import type { Api, Model } from "@earendil-works/pi-ai"
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
+
 export const SPEC_IDS = [
   "security",
   "correctness",
@@ -44,31 +47,22 @@ export interface UiLike {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// pi-модели: структурные типы без импорта pi-ai (удобно для тестов и
-// устойчиво к внутренним изменениям pi). Реальные Model<Api> из
-// ctx.modelRegistry удовлетворяют этим интерфейсам структурно.
+// pi-модели: типы берём напрямую из зависимостей pi (type-only импорты
+// стираются при сборке — на рантайм не влияют, тесты в bun работают).
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface PiModelLike {
-  id: string
-  name: string
-  provider: string
-  cost: { input: number; output: number }
-}
+/**
+ * Лёгкий контракт модели для движка/мастера: Pick из реального Model<Api> pi.
+ * Реальные модели из ctx.modelRegistry удовлетворяют ему структурно, а тестовым
+ * заглушкам не нужно собирать все поля pi (api, baseUrl, reasoning, ...).
+ */
+export type PiModelLike = Pick<Model<Api>, "id" | "name" | "provider" | "cost">
 
-export interface PiAuthResult {
-  ok: boolean
-  apiKey?: string
-  headers?: Record<string, string>
-  env?: Record<string, string>
-  error?: string
-}
+/** Реестр моделей pi как есть — без дублирования интерфейса. */
+export type PiRegistryLike = ModelRegistry
 
-export interface PiRegistryLike {
-  getAll(): PiModelLike[]
-  find(provider: string, modelId: string): PiModelLike | undefined
-  getApiKeyAndHeaders(model: PiModelLike): Promise<PiAuthResult>
-}
+/** Авторизация из pi — выведена из сигнатуры реестра, а не скопирована. */
+export type PiAuthResult = Awaited<ReturnType<ModelRegistry["getApiKeyAndHeaders"]>>
 
 export const isFreeModel = (m: PiModelLike): boolean => m.cost.input === 0 && m.cost.output === 0
 

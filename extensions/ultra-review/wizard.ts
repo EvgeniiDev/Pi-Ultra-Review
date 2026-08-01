@@ -27,7 +27,7 @@ export function buildModelPool(registry: PiRegistryLike): PiModelLike[] {
   const extra = EXTRA_MODELS
     .map(parseModelKey)
     .map(({ provider, modelId }) => registry.find(provider, modelId))
-    .filter((m): m is PiModelLike => !!m)
+    .filter((m): m is NonNullable<typeof m> => !!m)
   const free = registry.getAll().filter(isFreeModel)
   const seen = new Set<string>()
   return [...extra, ...free].filter((m) => (seen.has(modelKey(m)) ? false : (seen.add(modelKey(m)), true)))

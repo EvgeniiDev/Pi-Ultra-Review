@@ -2,7 +2,7 @@ import { complete, type UserMessage } from "@earendil-works/pi-ai/compat"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { EMPTY_RESPONSE_RETRIES, MODEL_MAX_TOKENS, MODEL_TEMPERATURE, RETRY_DELAY_MS } from "./constants.ts"
 import { retryOnEmpty } from "./retry.ts"
-import type { PiAuthResult, PiModelLike } from "./types.ts"
+import type { PiModelLike, PiRegistryLike } from "./types.ts"
 
 /**
  * Вызов модели через провайдерский слой pi (официальный паттерн из примера qna.ts):
@@ -13,12 +13,15 @@ import type { PiAuthResult, PiModelLike } from "./types.ts"
  *   существует только в агентском цикле, не здесь.
  */
 export async function callViaPi(
-  registry: { getApiKeyAndHeaders(model: PiModelLike): Promise<PiAuthResult> },
+  registry: PiRegistryLike,
   model: PiModelLike,
   prompt: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const auth = await registry.getApiKeyAndHeaders(model)
+  // В проде model — реальный Model<Api> из реестра pi (типизирован как
+  // PiModelLike), поэтому каст безопасен.
+  const fullModel = model as Model<Api>
+  const auth = await registry.getApiKeyAndHeaders(fullModel)
   if (!auth.ok) throw new Error(`No credentials for ${model.provider}: ${auth.error ?? "unknown"}`)
 
   const label = `${model.provider}/${model.id}`
@@ -29,7 +32,7 @@ export async function callViaPi(
       timestamp: Date.now(),
     }
 
-    const response = await complete(model as Model<Api>, { messages: [userMessage] }, {
+    const response = await complete(fullModel, { messages: [userMessage] }, {
       apiKey: auth.apiKey,
       headers: auth.headers,
       env: auth.env,
