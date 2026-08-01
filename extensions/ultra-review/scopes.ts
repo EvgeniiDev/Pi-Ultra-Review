@@ -63,8 +63,11 @@ const SKIP_DIRS = new Set([
   ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".eggs",
 ])
 const MAX_FILE_BYTES = 200 * 1024
-// Чуть больше лимита промпта, чтобы buildPrompt сработал [DIFF TRUNCATED]
-const MAX_TOTAL_CHARS = MAX_DIFF_CHARS * 2
+// На файл: большие файлы режем, чтобы каждый хоть как-то попал в diff
+const MAX_FILE_CONTENT_CHARS = 8_000
+// Всего: больше лимита промпта (MAX_DIFF_CHARS), чтобы buildPrompt
+// корректно сработал [DIFF TRUNCATED], а не молча обрезал.
+const MAX_TOTAL_CHARS = MAX_DIFF_CHARS * 3
 
 function walkFiles(dir: string, root: string, out: string[]): void {
   let entries
@@ -90,6 +93,7 @@ export function buildDirDiff(cwd: string): string {
 
   const chunks: string[] = []
   let total = 0
+  let included = 0
   for (const rel of files) {
     const p = join(cwd, rel)
     let stat
@@ -108,11 +112,23 @@ export function buildDirDiff(cwd: string): string {
     }
     if (content.includes("\u0000")) continue // бинарник
 
+    // Крупные файлы представляем усечёнными, а не выкидываем целиком
+    if (content.length > MAX_FILE_CONTENT_CHARS) {
+      content = `${content.slice(0, MAX_FILE_CONTENT_CHARS)}\n…[file content truncated]`
+    }
+
     const lines = content.split("\n")
     const diff = `diff --git a/${rel} b/${rel}\nnew file mode 100644\n--- /dev/null\n+++ b/${rel}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((l) => `+${l}`).join("\n")}\n`
     if (total + diff.length > MAX_TOTAL_CHARS) break
     chunks.push(diff)
     total += diff.length
+    included++
+  }
+
+  // Честный маркер неполноты: extractFiles его игнорирует, люди видят
+  const omitted = files.length - included
+  if (omitted > 0) {
+    chunks.push(`[DIFF TRUNCATED: ${omitted} of ${files.length} files not included (size limits)]`)
   }
   return chunks.join("\n")
 }

@@ -198,6 +198,7 @@ export async function executeReview(
   } catch {}
 
   const files = extractFiles(cfg.scope.diff)
+  const omitted = cfg.scope.diff.match(/\[DIFF TRUNCATED: (\d+) of \d+ files/)?.[1]
 
   const tasks = cfg.deep
     ? cfg.models.flatMap((m) => cfg.specs.map((s) => ({ model: m, spec: s })))
@@ -237,7 +238,7 @@ export async function executeReview(
   deps.ui.setStatus("ultra-review", undefined)
 
   const ts = timestamp()
-  const lines = [`# Code Review: ${branch} — ${ts}`, "", `**Scope:** ${cfg.scope.label}`, `**Files:** ${files.join(", ") || "N/A"}`, ""]
+  const lines = [`# Code Review: ${branch} — ${ts}`, "", `**Scope:** ${cfg.scope.label}`, `**Files:** ${files.join(", ") || "N/A"}${omitted ? ` (${omitted} more not included)` : ""}`, ""]
   let approved = 0, rejected = 0, errors = 0
 
   // Заякориваем regex на начало строки, чтобы не поймать "VERDICT:" из
