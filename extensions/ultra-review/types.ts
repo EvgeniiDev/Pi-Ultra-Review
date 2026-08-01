@@ -32,6 +32,19 @@ export interface ReviewConfig {
   specs: SpecId[]
   models: PiModelLike[]
   deep: boolean
+  /** Финальный проход судьи: дедупликация + валидация находок. */
+  judge: boolean
+}
+
+/** Находка, распарсенная из вывода ревьюера для судьи. */
+export interface ParsedFinding {
+  idx: number
+  severity: string
+  file: string
+  line: string
+  description: string
+  agent: string
+  spec: string
 }
 
 /**

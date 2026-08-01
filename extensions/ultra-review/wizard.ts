@@ -108,5 +108,8 @@ export async function runWizard(
   // 4. Deep mode
   const deep = await ctx.ui.confirm("Deep mode?", `Full matrix: ${selectedModels.length} × ${selectedSpecs.length} reviews. Off = round-robin.`)
 
-  return { scope, specs: selectedSpecs, models: selectedModels, deep }
+  // 5. Judge pass: финальный проход дедуплицирует и валидирует находки
+  const judge = await ctx.ui.confirm("Judge pass?", "After reviews, a final pass deduplicates and validates findings (recommended).")
+
+  return { scope, specs: selectedSpecs, models: selectedModels, deep, judge }
 }

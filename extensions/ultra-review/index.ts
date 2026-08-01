@@ -12,6 +12,7 @@ const toolSchema = Type.Object({
   specIds: Type.Array(Type.String(), { description: "Specialization IDs" }),
   modelIds: Type.Array(Type.String(), { description: "Model IDs (provider/modelId)" }),
   deep: Type.Boolean({ description: "Full matrix (true) or round-robin (false)" }),
+  judge: Type.Optional(Type.Boolean({ description: "Final judge pass to deduplicate and validate findings (default false)" })),
 })
 
 export default function (pi: ExtensionAPI) {
@@ -40,7 +41,7 @@ export default function (pi: ExtensionAPI) {
           ui: ctx.ui,
           callModel: (m: PiModelLike, p: string, s?: AbortSignal) => callViaPi(ctx.modelRegistry, m, p, s),
         }
-        const { summary, filename } = await executeReview(deps, ctx.cwd, { scope, specs, models, deep: params.deep }, signal)
+        const { summary, filename } = await executeReview(deps, ctx.cwd, { scope, specs, models, deep: params.deep, judge: params.judge ?? false }, signal)
         return { content: [{ type: "text", text: `✅ ${summary}\n📋 Report: reviews/${filename}` }], details: { filename } }
       } catch (err) {
         return { content: [{ type: "text", text: `❌ Error: ${(err as Error).message}` }], details: {} }

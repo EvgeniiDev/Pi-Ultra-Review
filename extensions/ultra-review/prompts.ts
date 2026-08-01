@@ -192,11 +192,17 @@ export function renderBullets(items: string[]): string {
   return items.map((item) => `- ${item}`).join("\n")
 }
 
-export function buildPrompt(diff: string, specId: SpecId): string {
+/** Обрезает diff до MAX_DIFF_CHARS, помечая неполноту. */
+export function truncateDiff(diff: string): { text: string; truncated: boolean } {
   const wasTruncated = diff.length > MAX_DIFF_CHARS
-  const truncated = wasTruncated
-    ? `${diff.slice(0, MAX_DIFF_CHARS)}\n\n[DIFF TRUNCATED]`
-    : diff
+  return {
+    text: wasTruncated ? `${diff.slice(0, MAX_DIFF_CHARS)}\n\n[DIFF TRUNCATED]` : diff,
+    truncated: wasTruncated,
+  }
+}
+
+export function buildPrompt(diff: string, specId: SpecId): string {
+  const { truncated } = truncateDiff(diff)
 
   const spec = REVIEW_SPECS[specId]
 
@@ -298,7 +304,7 @@ Do not:
   reachable, newly dangerous, or directly relevant.
 - Request broad refactors when a local correction is sufficient.
 
-${wasTruncated
+${truncated
   ? `
 # INCOMPLETE INPUT WARNING
 
@@ -331,6 +337,12 @@ General calibration:
   the repository, environment, branch, or inputs that are out of scope for the
   diff, that control is not a realistic attack path: downgrade the severity or
   omit the finding.
+- Rate severity on two axes — worst-case impact and likelihood/reachability —
+  and pick the tier that fits both.
+- Downgrade one level when mitigating factors apply (authentication required,
+  non-default configuration, unusual input conditions).
+- Never upgrade a speculative finding: a higher tier requires a concrete trace
+  or demonstration, not a mere possibility.
 
 # VERDICT RULES
 
@@ -356,7 +368,7 @@ Overall risk is the highest severity among all findings:
 
 When findings exist, output each finding on exactly one line using:
 
-- [SEVERITY] file:line -- description
+- [SEVERITY] file:line -- description QUOTE: "..." CONF: 0.0-1.0
 
 The description must contain:
 
@@ -365,11 +377,29 @@ The description must contain:
 3. The resulting impact.
 4. A concise fix direction.
 
+QUOTE is the exact source text at the cited lines, copied verbatim from the
+supplied diff. CONF is your confidence in the finding; if you are not sure,
+set CONF to 0.6 or lower.
+
+Before outputting a finding, apply these gates:
+
+- HALLUCINATION GATE: the finding must reference a symbol, expression, or
+  construct that is actually present in the diff at the cited lines, and the
+  QUOTE must match the diff verbatim. Do not invent APIs, flags, parameters,
+  callers, or patterns that are not there.
+- ACTIONABILITY GATE: every finding must cite a real line range visible in the
+  diff and include a concrete fix direction. Vague advice ("be careful with
+  user input", "consider refactoring") is not a finding.
+- FIX-CONSISTENCY GATE: for HIGH and CRITICAL findings, re-read the defect and
+  the fix direction together. If the fix would not clearly eliminate the
+  defect, drop the finding or downgrade it. Inability to write a coherent fix
+  is a strong signal the defect is imaginary.
+
 Example shape only:
 
 - [HIGH] src/example.ts:42 -- Attacker-controlled value reaches a shell command
   without argument escaping, allowing command execution when X is supplied;
-  invoke the process with an argument array instead.
+  invoke the process with an argument array instead. QUOTE: "execSync(cmd)" CONF: 0.9
 
 After the findings, output exactly these two final lines:
 
@@ -396,3 +426,103 @@ ${truncated}
 `.trim()
 }
 
+
+export interface JudgeFindingInput {
+  idx: number
+  severity: string
+  file: string
+  line: string
+  description: string
+  agent: string
+  spec: string
+}
+
+/**
+ * Финальный проход судьи (идея из consilium: super/ultra depth).
+ * Судья получает diff + все находки панели ревьюеров и выносит по каждой
+ * вердикт: VALID / DUPLICATE / FALSE_POSITIVE / DOWNGRADE. Вывод — строго JSON.
+ */
+export function buildJudgePrompt(diff: string, findings: JudgeFindingInput[]): string {
+  const { text: truncated } = truncateDiff(diff)
+  const findingsText = findings
+    .map((f) => `${f.idx}. [${f.severity}] ${f.file}:${f.line} -- ${f.description} (agent: ${f.agent}, spec: ${f.spec})`)
+    .join("\n")
+
+  return `
+# ROLE
+
+You are a senior code reviewer acting as the final filter over a panel of
+specialist findings. Decide which findings to keep, deduplicate overlapping
+ones, and reject hallucinations. The code under review is the diff below.
+
+# INPUTS
+
+1. Source under review (the diff the panel reviewed):
+
+\`\`\`diff
+${truncated}
+\`\`\`
+
+2. Findings to judge — one per line. idx is the finding number, QUOTE is the
+   code the reviewer cited, CONF is the reviewer's confidence:
+
+${findingsText}
+
+# VERDICTS
+
+For every finding idx assign exactly one verdict:
+
+- VALID — real defect, actionable, clearly grounded in the diff. Keep.
+- DUPLICATE — restates a prior VALID finding (same root defect, same
+  location, same fix direction). Reference the canonical finding index in
+  duplicate_of.
+- FALSE_POSITIVE — hallucinated construct, misread of the code, vague advice
+  with no concrete defect, or a fix that does not eliminate the claimed
+  defect. Be strict: "consider refactoring" without a precise issue is a
+  false positive.
+- DOWNGRADE — the claim is real but the severity is overstated. Keep it and
+  give the corrected severity in new_severity.
+
+# DECISION RULES
+
+1. Match by root cause, not phrasing: two findings describing the same defect
+   at the same location are duplicates even if their wording differs.
+2. Cluster line ranges: findings within ±3 lines pointing at the same
+   construct are usually one defect — keep the clearest, mark the rest
+   DUPLICATE.
+3. Hallucination test: if the QUOTE does not appear in the diff at the cited
+   location, mark FALSE_POSITIVE unless the rationale still makes a correct
+   point about a nearby real construct.
+4. Actionability test: a VALID finding must have a fix direction that would
+   remove the defect. Otherwise FALSE_POSITIVE.
+5. Be conservative on false positives: a weak-but-true finding is more useful
+   than a missed bug. Demand strong evidence before rejecting.
+6. Severity calibration: critical requires a concrete exploit/dataflow trace;
+   high requires reachability in real code paths; speculative bugs cap at
+   medium; stylistic issues without a defect cap at low.
+
+# OUTPUT
+
+Emit ONE JSON object, no preamble, no Markdown fences, exactly this schema:
+
+{
+  "verdicts": [
+    { "idx": 1, "verdict": "VALID", "duplicate_of": null, "new_severity": null, "rationale": "one sentence" }
+  ],
+  "summary": { "valid": 0, "duplicate": 0, "false_positive": 0, "downgrade": 0 },
+  "kept": [1, 2]
+}
+
+- verdict: VALID | DUPLICATE | FALSE_POSITIVE | DOWNGRADE
+- duplicate_of: finding index, only when verdict is DUPLICATE
+- new_severity: LOW | MEDIUM | HIGH | CRITICAL, only when verdict is DOWNGRADE
+- kept: indices of findings that survive (VALID + DOWNGRADE)
+- summary counts must match the verdicts
+- JSON must be valid: no trailing commas, all strings double-quoted
+
+When in doubt between FALSE_POSITIVE and DOWNGRADE, prefer DOWNGRADE — losing
+a real bug is worse than over-flagging severity. When in doubt between
+DUPLICATE and VALID, prefer DUPLICATE — the human reviewer wants a clean,
+non-overlapping list.
+`.trim()
+}
