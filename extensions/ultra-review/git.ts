@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process"
 
 export function git(cmd: string, cwd: string): string {
-  return execSync(cmd, { cwd, encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 }).trim()
+  return execSync(cmd, { cwd, encoding: "utf-8", maxBuffer: 50 * 1024 * 1024, timeout: 10_000 }).trim()
 }
 
 /**

@@ -1,5 +1,6 @@
 import { complete, type UserMessage } from "@earendil-works/pi-ai/compat"
 import type { Api, Model } from "@earendil-works/pi-ai"
+import { MODEL_MAX_TOKENS, MODEL_TEMPERATURE } from "./constants.ts"
 import type { PiAuthResult, PiModelLike } from "./types.ts"
 
 /**
@@ -30,8 +31,8 @@ export async function callViaPi(
     headers: auth.headers,
     env: auth.env,
     signal,
-    temperature: 0.3,
-    maxTokens: 8192,
+    temperature: MODEL_TEMPERATURE,
+    maxTokens: MODEL_MAX_TOKENS,
   })
 
   if (response.stopReason === "aborted") throw new Error(`${model.provider}/${model.id} aborted`)
@@ -39,8 +40,14 @@ export async function callViaPi(
     throw new Error(`${model.provider}/${model.id} error: ${response.errorMessage ?? "unknown"}`)
   }
 
-  return response.content
+  const text = response.content
     .filter((c): c is { type: "text"; text: string } => c.type === "text")
     .map((c) => c.text)
     .join("\n")
+
+  // Пустой ответ модели не должен тихо превращаться в "UNKNOWN" в отчёте:
+  // двигаем как ошибку, чтобы она попала в счётчик failed.
+  if (!text.trim()) throw new Error(`${model.provider}/${model.id} empty response`)
+
+  return text
 }
