@@ -124,6 +124,13 @@ function severityRank(severity: string): number {
   return SEV_RANK[severity.toUpperCase()] ?? 0
 }
 
+/** Живой прогресс-бар для статусной строки TUI: ▰▰▰▱▱▱ 3/12 */
+const BAR_WIDTH = 12
+function renderProgress(done: number, total: number): string {
+  const filled = total === 0 ? BAR_WIDTH : Math.round((done / total) * BAR_WIDTH)
+  return `Reviews: ${`▰`.repeat(filled)}${`▱`.repeat(BAR_WIDTH - filled)} ${done}/${total}`
+}
+
 function judgeVerdict(kept: ParsedFinding[]): string {
   if (kept.length === 0) return "APPROVED"
   const max = Math.max(...kept.map((f) => severityRank(f.severity)))
@@ -199,6 +206,7 @@ export async function executeReview(
   deps.ui.setStatus("ultra-review", `Running ${tasks.length} reviews (max ${PROVIDER_MAX_CONCURRENCY}/provider, ${GLOBAL_MAX_CONCURRENCY} global)...`)
 
   const limiter = createLimiter(GLOBAL_MAX_CONCURRENCY, PROVIDER_MAX_CONCURRENCY)
+  let done = 0
   const results: TaskResult[] = await Promise.all(
     tasks.map(({ model, spec }) =>
       limiter.run(model.provider, async () => {
@@ -216,6 +224,11 @@ export async function executeReview(
             output: `ERROR: ${(err as Error).message}`,
             error: (err as Error).message,
           }
+        } finally {
+          // Обновляем прогресс после каждого завершённого ревью, чтобы
+          // в статусной строке TUI было видно движение.
+          done++
+          deps.ui.setStatus("ultra-review", renderProgress(done, tasks.length))
         }
       }),
     ),
