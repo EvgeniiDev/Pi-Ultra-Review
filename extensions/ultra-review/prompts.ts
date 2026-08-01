@@ -217,6 +217,8 @@ Optimize for high signal:
 
 - Report real, actionable defects.
 - Prefer missing a weak or speculative concern over inventing a finding.
+- A clean review is a valid outcome: never pad the report with low-confidence
+  findings to appear useful.
 - Do not report praise, summaries, or general advice.
 - Do not report an issue unless the changed code provides concrete evidence.
 - Review only the supplied diff. Do not assume access to the complete repository.
@@ -280,6 +282,14 @@ Do not:
 
 - Invent filenames, line numbers, APIs, callers, schemas, requirements, or
   runtime behavior not supported by the diff.
+- Reason about control or data flow that is not fully visible in the diff.
+  Never claim that function A calls function B, or that value X reaches Y,
+  unless that call chain is shown in the diff.
+- Assert that a caller or input source exists when the diff does not show it.
+  If a finding's validity depends on code, call sites, or runtime behavior
+  that is not shown in the diff, omit the finding.
+- State what you guess the code might do; describe what the changed code
+  demonstrably does.
 - Report the same root cause more than once.
 - Split one problem into multiple findings.
 - combine unrelated problems into one finding.
@@ -317,6 +327,10 @@ General calibration:
 - LOW is worth fixing but is not independently release-blocking.
 - Never inflate severity to make a finding sound important.
 - When uncertain between two severities, choose the lower one.
+- If triggering the issue requires an attacker or reviewer to already control
+  the repository, environment, branch, or inputs that are out of scope for the
+  diff, that control is not a realistic attack path: downgrade the severity or
+  omit the finding.
 
 # VERDICT RULES
 
