@@ -7,14 +7,18 @@ import type { ParsedFinding, PiModelLike, ReviewConfig, UiLike } from "./types.t
 
 export interface ReviewDeps {
   ui: UiLike
-  /** Вызов модели: в проде это runAgent(ctx.modelRegistry, ...), в тестах — заглушка. */
-  callModel(model: PiModelLike, prompt: string, signal?: AbortSignal): Promise<string>
+  /**
+   * Вызов модели: в проде это runAgent(ctx.modelRegistry, ...), в тестах — заглушка.
+   * toolCalls = сколько раз агент читал файлы (0 — не пользовался read_file).
+   */
+  callModel(model: PiModelLike, prompt: string, signal?: AbortSignal): Promise<{ text: string; toolCalls: number }>
 }
 
 export interface TaskResult {
   modelName: string
   specName: string
   output: string
+  toolCalls: number
   error: string | null
 }
 
@@ -211,10 +215,12 @@ export async function executeReview(
     tasks.map(({ model, spec }) =>
       limiter.run(model.provider, async () => {
         try {
+          const out = await deps.callModel(model, buildPrompt(cfg.scope, spec), signal)
           return {
             modelName: `${model.provider}/${model.id}`,
             specName: spec,
-            output: await deps.callModel(model, buildPrompt(cfg.scope, spec), signal),
+            output: out.text,
+            toolCalls: out.toolCalls,
             error: null as string | null,
           }
         } catch (err) {
@@ -222,6 +228,7 @@ export async function executeReview(
             modelName: `${model.provider}/${model.id}`,
             specName: spec,
             output: `ERROR: ${(err as Error).message}`,
+            toolCalls: 0,
             error: (err as Error).message,
           }
         } finally {
@@ -255,7 +262,12 @@ export async function executeReview(
     const risk = r.output.match(riskRe)?.[1] || "UNKNOWN"
     if (v === "APPROVED") approved++
     if (v === "REJECTED") rejected++
-    lines.push(`## ${r.modelName} (${r.specName})`, `**Verdict:** ${v} | **Risk:** ${risk}`, "```text", r.output, "```", "")
+    lines.push(`## ${r.modelName} (${r.specName})`, `**Verdict:** ${v} | **Risk:** ${risk}`, "```text", r.output, "```")
+    // Прозрачность: агент, который не читал файлы, ревьюил только манифест/diff
+    if (r.toolCalls === 0) {
+      lines.push("> ⚠️ Agent did not use read_file — reviewed from manifest/diff only.")
+    }
+    lines.push("")
   }
 
   // Консенсус — только по успешным задачам: упавшие не должны
@@ -273,7 +285,7 @@ export async function executeReview(
       deps.ui.setStatus("ultra-review", `Judge pass: validating ${findings.length} findings...`)
       try {
         const out = await deps.callModel(judgeModel, buildJudgePrompt(cfg.scope, findings), signal)
-        const parsed = parseJudgeJson(out)
+        const parsed = parseJudgeJson(out.text)
         if (parsed?.verdicts?.length) {
           const judged = applyJudge(parsed, findings, `${judgeModel.provider}/${judgeModel.id}`)
           lines.push(...judged.lines)

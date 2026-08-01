@@ -54,8 +54,9 @@ export async function chatViaPi(
 
 /**
  * Полный агентный прогон ревью: модель сама читает файлы из репозитория
- * (root) через read_file и выносит вердикт. Пустой итог ретраится; если
- * провайдер не поддерживает тулы — повторяем без тулов один раз.
+ * (root) через read_file и выносит вердикт. Пустой итог ретраится.
+ * Фолбэка без тулов НЕТ: если провайдер/модель не поддерживает тулы —
+ * задача падает с явной ошибкой (в отчёте — failed + текст ошибки).
  */
 export async function runAgent(
   registry: PiRegistryLike,
@@ -63,7 +64,7 @@ export async function runAgent(
   prompt: string,
   root: string,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<{ text: string; toolCalls: number }> {
   const label = `${model.provider}/${model.id}`
   const tools: Tool[] = [makeReadTool()]
   const initialMessages: UserMessage[] = [
@@ -74,19 +75,23 @@ export async function runAgent(
     return readFileSafely(root, String(args.path ?? ""), args.startLine as number | undefined, args.endLine as number | undefined)
   }
 
+  let toolCalls = 0
   const attempt = async (): Promise<string> => {
-    try {
-      const chat: AgentChat = (messages, toolsList, s) =>
-        chatViaPi(registry, model, prompt, messages, toolsList as Tool[], s)
-      const loop = await runAgentLoop(chat, initialMessages, tools, executor, { maxIterations: 8 }, signal)
-      return loop.text
-    } catch (err) {
-      // Провайдер мог не принять tools — пробуем один раз без них
-      const chat: AgentChat = (messages, _tools, s) => chatViaPi(registry, model, prompt, messages, undefined, s)
-      const loop = await runAgentLoop(chat, initialMessages, [], executor, { maxIterations: 8 }, signal)
-      return loop.text
-    }
+    const chat: AgentChat = (messages, toolsList, s) =>
+      chatViaPi(registry, model, prompt, messages, toolsList as Tool[], s)
+    const loop = await runAgentLoop(chat, initialMessages, tools, executor, { maxIterations: 8 }, signal)
+    toolCalls = loop.toolCalls
+    return loop.text
   }
 
-  return retryOnEmpty(label, attempt, EMPTY_RESPONSE_RETRIES, RETRY_DELAY_MS, signal)
+  let text: string
+  try {
+    text = await retryOnEmpty(label, attempt, EMPTY_RESPONSE_RETRIES, RETRY_DELAY_MS, signal)
+  } catch (err) {
+    if (signal?.aborted) throw err
+    // Провайдер мог не принять tools или модель упала — без тихого деграда,
+    // задача уйдёт в failed с понятной причиной.
+    throw new Error(`${label} agent call failed (read_file): ${(err as Error).message}`)
+  }
+  return { text, toolCalls }
 }
