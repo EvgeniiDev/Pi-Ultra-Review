@@ -16,7 +16,10 @@ export interface Scope {
   id: string
   label: string
   description: string
-  diff: string
+  /** Файлы в скоупе (манифест). Ревьюер читает их через read_file по частям. */
+  files: string[]
+  /** Git-диф изменений — только для git-скоупов (working_tree / branch). */
+  diff?: string
 }
 
 export interface ReviewSpec {

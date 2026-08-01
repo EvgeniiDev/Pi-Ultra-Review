@@ -3,7 +3,7 @@ import { Type } from "@sinclair/typebox"
 import { SPECIALIZATIONS } from "./constants.ts"
 import { executeReview } from "./engine.ts"
 import { getScopes } from "./scopes.ts"
-import { callViaPi } from "./pi-call.ts"
+import { runAgent } from "./pi-call.ts"
 import type { PiModelLike, SpecId, UiLike } from "./types.ts"
 import { runWizard } from "./wizard.ts"
 
@@ -39,7 +39,7 @@ export default function (pi: ExtensionAPI) {
 
         const deps = {
           ui: ctx.ui,
-          callModel: (m: PiModelLike, p: string, s?: AbortSignal) => callViaPi(ctx.modelRegistry, m, p, s),
+          callModel: (m: PiModelLike, p: string, s?: AbortSignal) => runAgent(ctx.modelRegistry, m, p, ctx.cwd, s),
         }
         const { summary, filename } = await executeReview(deps, ctx.cwd, { scope, specs, models, deep: params.deep, judge: params.judge ?? false }, signal)
         return { content: [{ type: "text", text: `✅ ${summary}\n📋 Report: reviews/${filename}` }], details: { filename } }
@@ -62,7 +62,7 @@ export default function (pi: ExtensionAPI) {
 
         const deps = {
           ui,
-          callModel: (m: PiModelLike, p: string, s?: AbortSignal) => callViaPi(ctx.modelRegistry, m, p, s),
+          callModel: (m: PiModelLike, p: string, s?: AbortSignal) => runAgent(ctx.modelRegistry, m, p, ctx.cwd, s),
         }
         const { summary, filename } = await executeReview(deps, ctx.cwd, cfg)
         ui.notify(`✅ ${summary}\n📋 reviews/${filename}`, "success")

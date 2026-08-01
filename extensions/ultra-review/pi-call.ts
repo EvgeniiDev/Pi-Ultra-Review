@@ -1,58 +1,92 @@
 import { complete, type UserMessage } from "@earendil-works/pi-ai/compat"
-import type { Api, Model } from "@earendil-works/pi-ai"
+import type { Api, Message, Model, Tool } from "@earendil-works/pi-ai"
+import { Type } from "@sinclair/typebox"
+import { readFileSafely, runAgentLoop, type AgentChat, type AgentTurn } from "./agent.ts"
 import { EMPTY_RESPONSE_RETRIES, MODEL_MAX_TOKENS, MODEL_TEMPERATURE, RETRY_DELAY_MS } from "./constants.ts"
 import { retryOnEmpty } from "./retry.ts"
 import type { PiModelLike, PiRegistryLike } from "./types.ts"
 
 /**
- * Вызов модели через провайдерский слой pi (официальный паттерн из примера qna.ts):
- * - авторизация резолвится через ctx.modelRegistry.getApiKeyAndHeaders()
- *   (env-ключи, auth.json, OAuth, кастомные провайдеры — всё как в pi);
- * - формат ответа нормализует pi (openai/anthropic/google/mistral/...);
- * - вызовы можно запускать параллельно через Promise.all — сериализация
- *   существует только в агентском цикле, не здесь.
+ * Тул read_file: агент-ревьюер сам читает файлы по частям (строками),
+ * вместо того чтобы мы вливали весь контент в промпт.
  */
-export async function callViaPi(
+export function makeReadTool(): Tool {
+  return {
+    name: "read_file",
+    description:
+      "Read a file from the repository under review. Files can be large: read in chunks with startLine/endLine. Returns the requested lines with numbers and the file's total line count.",
+    parameters: Type.Object({
+      path: Type.String({ description: "Repository-relative path, e.g. src/engine.ts" }),
+      startLine: Type.Optional(Type.Number({ description: "1-based first line (default 1)" })),
+      endLine: Type.Optional(Type.Number({ description: "1-based last line (default: first 300 lines)" })),
+    }),
+  }
+}
+
+/** Один ход диалога через провайдерский слой pi (авторизация pi, нормализация pi). */
+export async function chatViaPi(
   registry: PiRegistryLike,
   model: PiModelLike,
-  prompt: string,
+  systemPrompt: string,
+  messages: unknown[],
+  tools: Tool[] | undefined,
   signal?: AbortSignal,
-): Promise<string> {
-  // В проде model — реальный Model<Api> из реестра pi (типизирован как
-  // PiModelLike), поэтому каст безопасен.
+): Promise<AgentTurn> {
   const fullModel = model as Model<Api>
   const auth = await registry.getApiKeyAndHeaders(fullModel)
   if (!auth.ok) throw new Error(`No credentials for ${model.provider}: ${auth.error ?? "unknown"}`)
 
+  const response = await complete(fullModel, { systemPrompt, messages: messages as Message[], tools }, {
+    apiKey: auth.apiKey,
+    headers: auth.headers,
+    env: auth.env,
+    signal,
+    temperature: MODEL_TEMPERATURE,
+    maxTokens: MODEL_MAX_TOKENS,
+  })
+
+  if (response.stopReason === "aborted") throw new Error(`${model.provider}/${model.id} aborted`)
+  if (response.stopReason === "error") {
+    throw new Error(`${model.provider}/${model.id} error: ${response.errorMessage ?? "unknown"}`)
+  }
+  return { assistantMessage: response, content: response.content, stopReason: response.stopReason, errorMessage: response.errorMessage }
+}
+
+/**
+ * Полный агентный прогон ревью: модель сама читает файлы из репозитория
+ * (root) через read_file и выносит вердикт. Пустой итог ретраится; если
+ * провайдер не поддерживает тулы — повторяем без тулов один раз.
+ */
+export async function runAgent(
+  registry: PiRegistryLike,
+  model: PiModelLike,
+  prompt: string,
+  root: string,
+  signal?: AbortSignal,
+): Promise<string> {
   const label = `${model.provider}/${model.id}`
-  const attempt = async () => {
-    const userMessage: UserMessage = {
-      role: "user",
-      content: [{ type: "text", text: prompt }],
-      timestamp: Date.now(),
-    }
-
-    const response = await complete(fullModel, { messages: [userMessage] }, {
-      apiKey: auth.apiKey,
-      headers: auth.headers,
-      env: auth.env,
-      signal,
-      temperature: MODEL_TEMPERATURE,
-      maxTokens: MODEL_MAX_TOKENS,
-    })
-
-    if (response.stopReason === "aborted") throw new Error(`${label} aborted`)
-    if (response.stopReason === "error") {
-      throw new Error(`${label} error: ${response.errorMessage ?? "unknown"}`)
-    }
-
-    return response.content
-      .filter((c): c is { type: "text"; text: string } => c.type === "text")
-      .map((c) => c.text)
-      .join("\n")
+  const tools: Tool[] = [makeReadTool()]
+  const initialMessages: UserMessage[] = [
+    { role: "user", content: [{ type: "text", text: "Review the files in scope and output your verdict." }], timestamp: Date.now() },
+  ]
+  const executor = async (call: { id?: string; name?: string; arguments?: Record<string, unknown> }) => {
+    const args = call.arguments ?? {}
+    return readFileSafely(root, String(args.path ?? ""), args.startLine as number | undefined, args.endLine as number | undefined)
   }
 
-  // Пустой ответ — не ошибка с первого раза: это может быть временный затуп.
-  // retryOnEmpty сам кинет ошибку, если все попытки пустые (попадёт в failed).
+  const attempt = async (): Promise<string> => {
+    try {
+      const chat: AgentChat = (messages, toolsList, s) =>
+        chatViaPi(registry, model, prompt, messages, toolsList as Tool[], s)
+      const loop = await runAgentLoop(chat, initialMessages, tools, executor, { maxIterations: 8 }, signal)
+      return loop.text
+    } catch (err) {
+      // Провайдер мог не принять tools — пробуем один раз без них
+      const chat: AgentChat = (messages, _tools, s) => chatViaPi(registry, model, prompt, messages, undefined, s)
+      const loop = await runAgentLoop(chat, initialMessages, [], executor, { maxIterations: 8 }, signal)
+      return loop.text
+    }
+  }
+
   return retryOnEmpty(label, attempt, EMPTY_RESPONSE_RETRIES, RETRY_DELAY_MS, signal)
 }

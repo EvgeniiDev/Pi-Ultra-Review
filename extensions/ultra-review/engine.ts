@@ -1,13 +1,13 @@
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { GLOBAL_MAX_CONCURRENCY, PROVIDER_MAX_CONCURRENCY } from "./constants.ts"
-import { extractFiles, git } from "./git.ts"
+import { git } from "./git.ts"
 import { buildJudgePrompt, buildPrompt } from "./prompts.ts"
 import type { ParsedFinding, PiModelLike, ReviewConfig, UiLike } from "./types.ts"
 
 export interface ReviewDeps {
   ui: UiLike
-  /** Вызов модели: в проде это callViaPi(ctx.modelRegistry, ...), в тестах — заглушка. */
+  /** Вызов модели: в проде это runAgent(ctx.modelRegistry, ...), в тестах — заглушка. */
   callModel(model: PiModelLike, prompt: string, signal?: AbortSignal): Promise<string>
 }
 
@@ -197,8 +197,7 @@ export async function executeReview(
     branch = git("git rev-parse --abbrev-ref HEAD", cwd) || "unknown"
   } catch {}
 
-  const files = extractFiles(cfg.scope.diff)
-  const omitted = cfg.scope.diff.match(/\[DIFF TRUNCATED: (\d+) of \d+ files/)?.[1]
+  const files = cfg.scope.files
 
   const tasks = cfg.deep
     ? cfg.models.flatMap((m) => cfg.specs.map((s) => ({ model: m, spec: s })))
@@ -215,7 +214,7 @@ export async function executeReview(
           return {
             modelName: `${model.provider}/${model.id}`,
             specName: spec,
-            output: await deps.callModel(model, buildPrompt(cfg.scope.diff, spec), signal),
+            output: await deps.callModel(model, buildPrompt(cfg.scope, spec), signal),
             error: null as string | null,
           }
         } catch (err) {
@@ -238,7 +237,7 @@ export async function executeReview(
   deps.ui.setStatus("ultra-review", undefined)
 
   const ts = timestamp()
-  const lines = [`# Code Review: ${branch} — ${ts}`, "", `**Scope:** ${cfg.scope.label}`, `**Files:** ${files.join(", ") || "N/A"}${omitted ? ` (${omitted} more not included)` : ""}`, ""]
+  const lines = [`# Code Review: ${branch} — ${ts}`, "", `**Scope:** ${cfg.scope.label}`, `**Files:** ${files.join(", ") || "N/A"}`, ""]
   let approved = 0, rejected = 0, errors = 0
 
   // Заякориваем regex на начало строки, чтобы не поймать "VERDICT:" из
@@ -273,7 +272,7 @@ export async function executeReview(
       const judgeModel = cfg.models[0]
       deps.ui.setStatus("ultra-review", `Judge pass: validating ${findings.length} findings...`)
       try {
-        const out = await deps.callModel(judgeModel, buildJudgePrompt(cfg.scope.diff, findings), signal)
+        const out = await deps.callModel(judgeModel, buildJudgePrompt(cfg.scope, findings), signal)
         const parsed = parseJudgeJson(out)
         if (parsed?.verdicts?.length) {
           const judged = applyJudge(parsed, findings, `${judgeModel.provider}/${judgeModel.id}`)
