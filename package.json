@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Multi-model parallel code review for Pi. Direct HTTP to providers via OpenAI-compatible API.",
   "type": "module",
+  "scripts": {
+    "test": "bun test"
+  },
   "engines": {
     "node": ">=20"
   },
