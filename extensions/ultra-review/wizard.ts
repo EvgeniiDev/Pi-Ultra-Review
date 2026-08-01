@@ -98,12 +98,16 @@ export async function runWizard(
 
   // 3. Models (бесплатные + доп. платные из EXTRA_MODELS)
   const modelsToPickFrom = buildModelPool(ctx.modelRegistry)
-  if (modelsToPickFrom.some((m) => !isFreeModel(m))) {
-    ctx.ui.notify("Including paid model(s): OpenRouter DeepSeek V4 Flash. May incur costs.", "warning")
-  }
 
   const selectedModels = await pickModels(ctx, modelsToPickFrom)
   if (selectedModels.length === 0) throw new Error("No models selected")
+
+  // Предупреждаем о платных моделях только если их реально выбрали,
+  // и перечисляем конкретные (не хардкод).
+  const paid = selectedModels.filter((m) => !isFreeModel(m))
+  if (paid.length > 0) {
+    ctx.ui.notify(`Selected paid model(s): ${paid.map(modelKey).join(", ")}. May incur costs.`, "warning")
+  }
 
   // 4. Deep mode
   const deep = await ctx.ui.confirm("Deep mode?", `Full matrix: ${selectedModels.length} × ${selectedSpecs.length} reviews. Off = round-robin.`)
