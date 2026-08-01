@@ -1,0 +1,17 @@
+{
+  "name": "pi-ultra-review",
+  "version": "1.0.0",
+  "description": "Multi-model parallel code review for Pi. Direct HTTP to providers via OpenAI-compatible API.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "pi": {
+    "extensions": ["./extensions"]
+  }
+}
