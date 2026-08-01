@@ -1,6 +1,7 @@
 import { complete, type UserMessage } from "@earendil-works/pi-ai/compat"
 import type { Api, Model } from "@earendil-works/pi-ai"
-import { MODEL_MAX_TOKENS, MODEL_TEMPERATURE } from "./constants.ts"
+import { EMPTY_RESPONSE_RETRIES, MODEL_MAX_TOKENS, MODEL_TEMPERATURE, RETRY_DELAY_MS } from "./constants.ts"
+import { retryOnEmpty } from "./retry.ts"
 import type { PiAuthResult, PiModelLike } from "./types.ts"
 
 /**
@@ -20,34 +21,35 @@ export async function callViaPi(
   const auth = await registry.getApiKeyAndHeaders(model)
   if (!auth.ok) throw new Error(`No credentials for ${model.provider}: ${auth.error ?? "unknown"}`)
 
-  const userMessage: UserMessage = {
-    role: "user",
-    content: [{ type: "text", text: prompt }],
-    timestamp: Date.now(),
+  const label = `${model.provider}/${model.id}`
+  const attempt = async () => {
+    const userMessage: UserMessage = {
+      role: "user",
+      content: [{ type: "text", text: prompt }],
+      timestamp: Date.now(),
+    }
+
+    const response = await complete(model as Model<Api>, { messages: [userMessage] }, {
+      apiKey: auth.apiKey,
+      headers: auth.headers,
+      env: auth.env,
+      signal,
+      temperature: MODEL_TEMPERATURE,
+      maxTokens: MODEL_MAX_TOKENS,
+    })
+
+    if (response.stopReason === "aborted") throw new Error(`${label} aborted`)
+    if (response.stopReason === "error") {
+      throw new Error(`${label} error: ${response.errorMessage ?? "unknown"}`)
+    }
+
+    return response.content
+      .filter((c): c is { type: "text"; text: string } => c.type === "text")
+      .map((c) => c.text)
+      .join("\n")
   }
 
-  const response = await complete(model as Model<Api>, { messages: [userMessage] }, {
-    apiKey: auth.apiKey,
-    headers: auth.headers,
-    env: auth.env,
-    signal,
-    temperature: MODEL_TEMPERATURE,
-    maxTokens: MODEL_MAX_TOKENS,
-  })
-
-  if (response.stopReason === "aborted") throw new Error(`${model.provider}/${model.id} aborted`)
-  if (response.stopReason === "error") {
-    throw new Error(`${model.provider}/${model.id} error: ${response.errorMessage ?? "unknown"}`)
-  }
-
-  const text = response.content
-    .filter((c): c is { type: "text"; text: string } => c.type === "text")
-    .map((c) => c.text)
-    .join("\n")
-
-  // Пустой ответ модели не должен тихо превращаться в "UNKNOWN" в отчёте:
-  // двигаем как ошибку, чтобы она попала в счётчик failed.
-  if (!text.trim()) throw new Error(`${model.provider}/${model.id} empty response`)
-
-  return text
+  // Пустой ответ — не ошибка с первого раза: это может быть временный затуп.
+  // retryOnEmpty сам кинет ошибку, если все попытки пустые (попадёт в failed).
+  return retryOnEmpty(label, attempt, EMPTY_RESPONSE_RETRIES, RETRY_DELAY_MS, signal)
 }

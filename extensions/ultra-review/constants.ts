@@ -13,6 +13,11 @@ export const GLOBAL_MAX_CONCURRENCY = 10
 export const MODEL_TEMPERATURE = 0.3
 export const MODEL_MAX_TOKENS = 8192
 
+// Ретрай пустого ответа модели (иногда это временный затуп),
+// задержка растёт линейно: delay, delay*2, ...
+export const EMPTY_RESPONSE_RETRIES = 2
+export const RETRY_DELAY_MS = 1500
+
 export const SPECIALIZATIONS: Record<SpecId, string> = {
   security: "Security (vuln, injection, auth, secrets, OWASP)",
   correctness: "Correctness (logic bugs, edge cases, race conditions)",
