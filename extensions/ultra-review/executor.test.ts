@@ -1,9 +1,24 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test, mock } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { makeExecutor, runAgentLoop } from "./agent.ts"
-import { agentOptionsForSpec, makeReadTool, makeSearchTool } from "./pi-call.ts"
+
+// pi-call.ts импортирует модули, которые вне рантайма pi не резолвятся, —
+// мокаем до импорта pi-call (тесты ниже используют только makeReadTool).
+mock.module("@earendil-works/pi-ai/compat", () => ({ complete: async () => ({ stopReason: "end_turn", content: [] }) }))
+mock.module("@sinclair/typebox", () => ({ Type: { String: () => ({}), Number: () => ({}), Boolean: () => ({}), Optional: (x: unknown) => x, Array: (x: unknown) => x, Object: (x: unknown) => x } }))
+mock.module("./constants.ts", () => ({
+  EMPTY_RESPONSE_RETRIES: 2,
+  RETRY_DELAY_MS: 1, // в тестах — 1ms вместо 1500ms
+  MODEL_MAX_TOKENS: 8192,
+  MODEL_TEMPERATURE: 0.3,
+  SIMPLIFY_MAX_ITERATIONS: 10,
+  SIMPLIFY_MAX_TOOL_CALLS: 40,
+}))
+
+// Динамический импорт — статические хоистятся и загрузились бы ДО mock.module.
+const { makeExecutor, runAgentLoop } = await import("./agent.ts")
+const { agentOptionsForSpec, makeReadTool, makeSearchTool } = await import("./pi-call.ts")
 
 let root: string
 beforeAll(() => {

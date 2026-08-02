@@ -35,6 +35,49 @@ test("security: risk/action fields ignored, finding kept without them", () => {
   expect(r.findings[0].action).toBeUndefined()
 })
 
+test("review JSON wrapped in prose + ```json fence still parses", () => {
+  const out = `This is all documentation. I reviewed the key files and found no real issues.\n\n\`\`\`json\n{"context":"FULL","findings":[{"severity":"LOW","file":"src/a.ts","line":1,"title":"x"}]}\n\`\`\`\n`
+  const r = processTaskOutput(out, "correctness", scopeFiles, readFiles)
+  expect(r.findings).toHaveLength(1)
+  expect(r.context).toBe("FULL")
+})
+
+test("review JSON in plain prose (no fence) still parses", () => {
+  const out = `I checked the code. Verdict: {"context":"PARTIAL","findings":[{"severity":"MEDIUM","file":"src/a.ts","line":3,"title":"y"}]}. Nothing else.`
+  const r = processTaskOutput(out, "correctness", scopeFiles, readFiles)
+  expect(r.findings).toHaveLength(1)
+  expect(r.context).toBe("PARTIAL")
+})
+
+test("pure prose without JSON stays malformed (not a false positive)", () => {
+  const r = processTaskOutput("Everything looks fine, no issues found.", "correctness", scopeFiles, readFiles)
+  expect(r.findings).toHaveLength(0)
+  expect(r.malformed).toBeTruthy()
+})
+
+test("prose with braces in code samples + ```json fence still parses", () => {
+  // Реальный кейс: проза анализа содержит { } в примерах кода — срез первого
+  // { … последнего } захватывает мусор, но ```json-фенс вытаскивает вердикт.
+  const out = `Line 22: \`end = text.find("\\n---", 4)\`. If the frontmatter is \`---\\nname: foo\\n---\\n\`, then \`{ a: 1 }\` and \`{"x": {"y": [1,2]}}\` — edge case, unlikely.\n\nGiven the scope, a clean review.\n\n\`\`\`json\n{"context":"FULL","findings":[{"severity":"LOW","file":"src/a.ts","line":1,"title":"z"}]}\n\`\`\`\n`
+  const r = processTaskOutput(out, "correctness", scopeFiles, readFiles)
+  expect(r.findings).toHaveLength(1)
+  expect(r.context).toBe("FULL")
+})
+
+test("no fence: balanced {…} extracted from the last { despite braces in prose", () => {
+  const out = `Example object \`{"k": 1}\` in prose. Final verdict: {"context":"PARTIAL","findings":[{"severity":"MEDIUM","file":"src/a.ts","line":2,"title":"q"}]} the end.`
+  const r = processTaskOutput(out, "correctness", scopeFiles, readFiles)
+  expect(r.findings).toHaveLength(1)
+  expect(r.context).toBe("PARTIAL")
+})
+
+test("multiple fences: code sample first, json verdict second", () => {
+  const out = `\`\`\`python\n{"not": "json"}\n\`\`\`\nVerdict:\n\`\`\`json\n{"context":"FULL","findings":[]}\n\`\`\`\n`
+  const r = processTaskOutput(out, "correctness", scopeFiles, readFiles)
+  expect(r.findings).toHaveLength(0)
+  expect(r.context).toBe("FULL")
+})
+
 test("executeReview renders risk/action and reuseTarget into the report", async () => {
   const { mkdtempSync, mkdirSync, rmSync } = await import("node:fs")
   const { tmpdir } = await import("node:os")
