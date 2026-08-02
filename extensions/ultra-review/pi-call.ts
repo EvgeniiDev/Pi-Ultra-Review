@@ -58,18 +58,32 @@ export async function chatViaPi(
 
   // 429/rate-limit — временный сбой провайдера: ретраится ОДИН вызов complete
   // (не весь агентный цикл — рестарт цикла на каждой попытке раздувает прогон).
-  const isRateLimit = (e: unknown) => /429|rate\s*limit/i.test((e as Error).message ?? "")
+  // "Stream ended without finish_reason" — оборванный апстримом стрим (часто
+  // на free-тире через релей): тоже временный сбой, ретраим один раз.
+  // Ошибка может прийти ДВУМЯ путями: исключение из complete() либо graceful
+  // error-ответ (stopReason === "error") — второй путь ретраится здесь же,
+  // бросая retryable-ошибку из замыкания, чтобы её подхватил retryOnFailure.
+  const isRetryable = (e: unknown) =>
+    /429|rate\s*limit|stream ended without finish_reason/i.test(
+      (e as Error).message ?? "",
+    )
   const response = await retryOnFailure(
     `${model.provider}/${model.id}`,
-    () => complete(fullModel, { systemPrompt, messages: messages as Message[], tools }, {
-      apiKey: auth.apiKey,
-      headers: auth.headers,
-      env: auth.env,
-      signal,
-      temperature: MODEL_TEMPERATURE,
-      maxTokens: MODEL_MAX_TOKENS,
-    }),
-    isRateLimit,
+    () =>
+      complete(fullModel, { systemPrompt, messages: messages as Message[], tools }, {
+        apiKey: auth.apiKey,
+        headers: auth.headers,
+        env: auth.env,
+        signal,
+        temperature: MODEL_TEMPERATURE,
+        maxTokens: MODEL_MAX_TOKENS,
+      }).then((r) => {
+        if (r.stopReason === "error" && isRetryable(new Error(r.errorMessage ?? ""))) {
+          throw new Error(`${model.provider}/${model.id} error: ${r.errorMessage}`)
+        }
+        return r
+      }),
+    isRetryable,
     2,
     RETRY_DELAY_MS,
     signal,

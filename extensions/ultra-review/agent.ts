@@ -306,15 +306,19 @@ export async function runAgentLoop(
     }
     if (isLast) {
       // Модель всё ещё просит тулы, хотя их больше нет — уходим к nudging-финалу.
+      // Отвечаем КАЖДОМУ реальному tool_call: апстрим валидирует, что у каждого
+      // assistant tool_call есть tool-ответ (фейковый id "limit" это ломает).
       messages.push(turn.assistantMessage)
-      messages.push({
-        role: "toolResult",
-        toolCallId: "limit",
-        toolName: "tool",
-        content: [{ type: "text", text: "No more tool calls allowed. Output your final verdict now." }],
-        isError: true,
-        timestamp: Date.now(),
-      })
+      for (const c of calls) {
+        messages.push({
+          role: "toolResult",
+          toolCallId: c.id ?? "tool",
+          toolName: c.name ?? "tool",
+          content: [{ type: "text", text: "No more tool calls allowed. Output your final verdict now." }],
+          isError: true,
+          timestamp: Date.now(),
+        })
+      }
       break
     }
 
@@ -322,14 +326,18 @@ export async function runAgentLoop(
     messages.push(turn.assistantMessage)
     if (toolCalls > maxToolCalls || contextChars > maxContextChars) {
       forceFinish = true
-      messages.push({
-        role: "toolResult",
-        toolCallId: "limit",
-        toolName: "tool",
-        content: [{ type: "text", text: "Read budget reached. Output your final verdict now based on what you have." }],
-        isError: true,
-        timestamp: Date.now(),
-      })
+      // Тот же протокол: отвечаем каждому реальному tool_call, а не одному
+      // фейковому id — иначе апстрим отклоняет историю сообщений целиком.
+      for (const c of calls) {
+        messages.push({
+          role: "toolResult",
+          toolCallId: c.id ?? "tool",
+          toolName: c.name ?? "tool",
+          content: [{ type: "text", text: "Read budget reached. Output your final verdict now based on what you have." }],
+          isError: true,
+          timestamp: Date.now(),
+        })
+      }
       continue
     }
 

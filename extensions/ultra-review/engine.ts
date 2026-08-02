@@ -133,36 +133,93 @@ function severityRank(severity: string): number {
 // Легаси-формат (однострочные находки) — фолбэк, если модель не выдала JSON
 const LEGACY_FINDING_RE = /^- \[(\w+)\] (.+?):(\d+)(?:-(\d+))? -- (.*)$/m
 
-function parseReviewOutput(text: string): { ok: true; output: JsonReviewOutput } | { ok: false; reason: string } {
-  const stripped = text.replace(/^```(?:json)?/m, "").replace(/```$/m, "").trim()
-  try {
-    const obj = JSON.parse(stripped) as JsonReviewOutput
-    if (obj && typeof obj === "object" && Array.isArray(obj.findings)) {
-      return { ok: true, output: obj }
-    }
-    return { ok: false, reason: "malformed JSON (expected {context, findings[]})" }
-  } catch {
-    // Легаси: "No issues found." / "- [SEV] file:line -- desc QUOTE: CONF:"
-    const findings: JsonFinding[] = []
-    for (const line of text.split("\n")) {
-      const m = line.match(LEGACY_FINDING_RE)
-      if (!m) continue
-      const quote = m[5].match(/QUOTE:\s*"([^"]*)"/)?.[1]
-      findings.push({
-        severity: m[1].toUpperCase(),
-        file: m[2],
-        line: Number(m[3]),
-        lineEnd: m[4] ? Number(m[4]) : null,
-        title: m[5].replace(/\s*QUOTE:\s*"[^"]*"\s*CONF:\s*[\d.]+/i, "").trim(),
-        evidence: quote,
-      })
-    }
-    const hasVerdict = /^VERDICT:\s*\w+/mi.test(text)
-    if (findings.length > 0 || hasVerdict) {
-      return { ok: true, output: { context: "FULL", findings } }
-    }
-    return { ok: false, reason: "malformed output (expected JSON review)" }
+/**
+ * Кандидаты на JSON-вердикт из ответа модели. Модели оборачивают вердикт
+ * прозой, фенсами и кодом с фигурными скобками — поэтому ищем по очереди:
+ * 1) все ```json / ```-фенсы (по порядку);
+ * 2) сбалансированный объект от ПОСЛЕДНЕГО "{" (вердикт обычно в конце);
+ * 3) срез первого { … последнего } (последний шанс).
+ */
+function jsonCandidates(text: string): string[] {
+  const out: string[] = []
+  const fenceRe = /```(?:json)?\s*([\s\S]*?)```/g
+  for (const m of text.matchAll(fenceRe)) {
+    const cand = m[1].trim()
+    if (cand) out.push(cand)
   }
+  // Сбалансированный объект от ПОСЛЕДНЕГО "{": вердикт обычно в конце.
+  // Собрать индексы { сразу — обратный проход через lastIndexOf(fromIndex)
+  // при fromIndex=-1 клампится в 0 и зацикливается на первом символе.
+  const opens: number[] = []
+  for (let i = text.indexOf("{"); i >= 0; i = text.indexOf("{", i + 1)) opens.push(i)
+  for (let n = opens.length - 1; n >= 0; n--) {
+    const idx = opens[n]
+    let depth = 0
+    let inStr = false
+    let esc = false
+    for (let i = idx; i < text.length; i++) {
+      const ch = text[i]
+      if (inStr) {
+        if (esc) esc = false
+        else if (ch === "\\") esc = true
+        else if (ch === '"') inStr = false
+        continue
+      }
+      if (ch === '"') inStr = true
+      else if (ch === "{") depth++
+      else if (ch === "}") {
+        depth--
+        if (depth === 0) {
+          out.push(text.slice(idx, i + 1))
+          break
+        }
+      }
+    }
+  }
+  const start = text.indexOf("{")
+  const end = text.lastIndexOf("}")
+  if (start >= 0 && end > start) out.push(text.slice(start, end + 1))
+  return out
+}
+
+function parseReviewOutput(text: string): { ok: true; output: JsonReviewOutput } | { ok: false; reason: string } {
+  // Сначала — прямой JSON: срезаем ```json-фенсы по краям (ответ ровно блоком),
+  // затем — все кандидаты из jsonCandidates (проза вокруг JSON, фенсы, скобки).
+  const stripped = text.replace(/^```(?:json)?\s*/m, "").replace(/```\s*$/m, "").trim()
+  for (const candidate of [stripped, ...jsonCandidates(text)]) {
+    if (!candidate) continue
+    try {
+      const obj = JSON.parse(candidate) as JsonReviewOutput
+      if (obj && typeof obj === "object" && Array.isArray(obj.findings)) {
+        return { ok: true, output: obj }
+      }
+      // JSON валиден, но это не ревью-вердикт (напр. вложенный объект находки
+      // {severity:…} из прозы). Не выходим с ошибкой — ищем следующий кандидат,
+      // в идеале — полноценный объект с findings[].
+    } catch {
+      // невалидный JSON — пробуем следующий кандидат
+    }
+  }
+  // Легаси: "No issues found." / "- [SEV] file:line -- desc QUOTE: CONF:"
+  const findings: JsonFinding[] = []
+  for (const line of text.split("\n")) {
+    const m = line.match(LEGACY_FINDING_RE)
+    if (!m) continue
+    const quote = m[5].match(/QUOTE:\s*"([^"]*)"/)?.[1]
+    findings.push({
+      severity: m[1].toUpperCase(),
+      file: m[2],
+      line: Number(m[3]),
+      lineEnd: m[4] ? Number(m[4]) : null,
+      title: m[5].replace(/\s*QUOTE:\s*"[^"]*"\s*CONF:\s*[\d.]+/i, "").trim(),
+      evidence: quote,
+    })
+  }
+  const hasVerdict = /^VERDICT:\s*\w+/mi.test(text)
+  if (findings.length > 0 || hasVerdict) {
+    return { ok: true, output: { context: "FULL", findings } }
+  }
+  return { ok: false, reason: "malformed output (expected JSON review)" }
 }
 
 interface ProcessedTask {
