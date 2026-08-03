@@ -357,6 +357,21 @@ export async function runAgentLoop(
     const textPart = extractText(turn.content)
     if (textPart) text = textPart
 
+    // Вердикт через submit_review: свободная модель охотно вызывает тулы и не
+    // пишет JSON прозой — принимаем вердикт из аргумента тула (структурного
+    // или текстового <invoke>/DSML). Срабатывает на любой итерации.
+    const submitted = calls.find((c) => c.name === "submit_review")
+    if (submitted) {
+      const v = submitted.arguments?.verdict
+      const verdict =
+        typeof v === "string"
+          ? v.trim()
+          : typeof v === "object" && v !== null
+            ? JSON.stringify(v)
+            : ""
+      if (verdict) return { text: verdict, iterations: iteration + 1, toolCalls }
+    }
+
     if (calls.length === 0) {
       return { text: textPart || text, iterations: iteration + 1, toolCalls }
     }
@@ -431,6 +446,19 @@ export async function runAgentLoop(
       signal,
     )
     text = extractText(nudge.content)
+    // Модель может и на нодж ответить submit_review-разметкой — вытаскиваем.
+    const submitCalls = extractToolCalls(nudge.content)
+    const submit = submitCalls.find((c) => c.name === "submit_review")
+    if (submit) {
+      const v = submit.arguments?.verdict
+      const verdict =
+        typeof v === "string"
+          ? v.trim()
+          : typeof v === "object" && v !== null
+            ? JSON.stringify(v)
+            : ""
+      if (verdict) text = verdict
+    }
   }
   return { text, iterations: maxIterations, toolCalls }
 }

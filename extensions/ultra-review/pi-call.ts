@@ -35,6 +35,22 @@ export function makeSearchTool(): Tool {
   }
 }
 
+/**
+ * Тул завершения: свободная модель (релей) упорно вызывает тулы и не пишет
+ * JSON прозой — вердикт принимаем из аргумента этого тула (структурного или
+ * текстового <invoke>).
+ */
+export function makeSubmitTool(): Tool {
+  return {
+    name: "submit_review",
+    description:
+      "Call this to finish the review: pass the COMPLETE final review as a JSON object in the verdict argument. The verdict JSON has the shape described in the review contract. Calling this ends the review.",
+    parameters: Type.Object({
+      verdict: Type.String({ description: "The complete final review JSON object" }),
+    }),
+  }
+}
+
 /** Per-spec опции агента: simplify получает search_files и больший бюджет. */
 export function agentOptionsForSpec(specId: string): { extraTools: Tool[]; maxIterations: number; maxToolCalls: number } {
   if (specId === "simplify") {
@@ -112,7 +128,7 @@ export async function runAgent(
   opts: { extraTools?: Tool[]; maxIterations?: number; maxToolCalls?: number } = {},
 ): Promise<{ text: string; toolCalls: number; readFiles: string[] }> {
   const label = `${model.provider}/${model.id}`
-  const tools: Tool[] = [makeReadTool(), ...(opts.extraTools ?? [])]
+  const tools: Tool[] = [makeReadTool(), makeSubmitTool(), ...(opts.extraTools ?? [])]
   const initialMessages: UserMessage[] = [
     { role: "user", content: [{ type: "text", text: "Review the files in scope and output your verdict." }], timestamp: Date.now() },
   ]

@@ -476,11 +476,15 @@ ${diffSection}
 # READING FILES
 
 ${specId === "simplify"
-  ? `You have two tools:
+  ? `You have three tools:
 
 - read_file(path, startLine?, endLine?) — read files in chunks. Returns the requested lines with numbers and the file's total line count.
-- search_files(query, path?) — find existing helpers, duplicates, or similar code anywhere in the repository. Use it BEFORE flagging reuse or duplication, then read the candidates with read_file to confirm.`
-  : `You have one tool: read_file(path, startLine?, endLine?).`}
+- search_files(query, path?) — find existing helpers, duplicates, or similar code anywhere in the repository. Use it BEFORE flagging reuse or duplication, then read the candidates with read_file to confirm.
+- submit_review(verdict) — call this to finish: pass the COMPLETE final review JSON object as the verdict argument.`
+  : `You have two tools:
+
+- read_file(path, startLine?, endLine?) — read files in chunks. Returns the requested lines with numbers and the file's total line count.
+- submit_review(verdict) — call this to finish: pass the COMPLETE final review JSON object as the verdict argument.`}
 
 - Read the files under review as needed. Do not guess about code you have not
   read.
@@ -490,8 +494,9 @@ ${specId === "simplify"
   when one is provided).
 - You may also read supporting files outside the review list when needed to
   understand the change.
-- When you are confident about the findings, output the JSON verdict without
-  further tool calls.
+- When you are confident about the findings, call submit_review with the
+  complete verdict JSON in the verdict argument — NEVER write the JSON in
+  prose; the review is not finished until submit_review is called.
 
 # TRUST BOUNDARY
 

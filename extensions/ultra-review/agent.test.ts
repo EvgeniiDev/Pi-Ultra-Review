@@ -270,3 +270,52 @@ test("DSML fullwidth <｜DSML｜invoke> tool call is normalized, parsed and exec
   expect(res.text).toBe('{"context":"FULL","findings":[]}')
   expect(calls).toBe(2)
 })
+
+test("textual <invoke submit_review> verdict is extracted and returned without executing read tools", async () => {
+  let calls = 0
+  let executed = 0
+  const chat = async (messages: unknown[], _tools: unknown[]) => {
+    assertProtocol(messages as Msg[])
+    calls++
+    const text =
+      '<tool_calls>\n<invoke name="submit_review">\n<parameter name="verdict" string="true">{"context":"FULL","findings":[{"severity":"high","file":"src/a.ts","line":3,"title":"t","description":"d","evidence":"e"}]}</parameter>\n</invoke>\n</tool_calls>'
+    return {
+      assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
+      content: [{ type: "text", text }],
+      stopReason: "text",
+    }
+  }
+  const res = await runAgentLoop(
+    chat as never,
+    [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
+    [],
+    async () => { executed++; return { ok: true, text: "x" } },
+    { maxIterations: 5, maxToolCalls: 10 },
+    undefined,
+  )
+  expect(executed).toBe(0)
+  expect(res.text).toBe('{"context":"FULL","findings":[{"severity":"high","file":"src/a.ts","line":3,"title":"t","description":"d","evidence":"e"}]}')
+  expect(calls).toBe(1)
+})
+
+test("structured submit_review with object verdict is JSON-stringified", async () => {
+  const verdictObj = { context: "FULL", findings: [] }
+  const chat = async (messages: unknown[], _tools: unknown[]) => {
+    assertProtocol(messages as Msg[])
+    const content = [{ type: "toolCall" as const, id: "call-1", name: "submit_review", arguments: { verdict: verdictObj } }]
+    return {
+      assistantMessage: { role: "assistant", content },
+      content,
+      stopReason: "toolUse",
+    }
+  }
+  const res = await runAgentLoop(
+    chat as never,
+    [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
+    [],
+    async () => ({ ok: true, text: "x" }),
+    { maxIterations: 5, maxToolCalls: 10 },
+    undefined,
+  )
+  expect(res.text).toBe(JSON.stringify(verdictObj))
+})
