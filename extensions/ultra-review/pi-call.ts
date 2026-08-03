@@ -68,6 +68,7 @@ export async function chatViaPi(
   messages: unknown[],
   tools: Tool[] | undefined,
   signal?: AbortSignal,
+  maxTokens?: number,
 ): Promise<AgentTurn> {
   const fullModel = model as Model<Api>
   const auth = await registry.getApiKeyAndHeaders(fullModel)
@@ -94,7 +95,7 @@ export async function chatViaPi(
         env: auth.env,
         signal,
         temperature: MODEL_TEMPERATURE,
-        maxTokens: MODEL_MAX_TOKENS,
+        maxTokens: maxTokens ?? MODEL_MAX_TOKENS,
       }).then((r) => {
         if (r.stopReason === "error" && isRetryable(new Error(r.errorMessage ?? ""))) {
           throw new Error(`${model.provider}/${model.id} error: ${r.errorMessage}`)
@@ -128,16 +129,32 @@ async function fallbackReview(
 ): Promise<string | null> {
   const excerpts = readResults.join("\n\n---\n\n").slice(0, 60_000)
   if (!excerpts.trim()) return null
-  const turn = await chatViaPi(
-    registry,
-    model,
-    buildFallbackReviewPrompt(),
-    [{ role: "user", content: [{ type: "text", text: `FILE EXCERPTS (numbered lines):\n\n${excerpts}` }] }],
-    undefined, // без тулов
-    signal,
-  )
-  const text = extractText(turn.content)
-  return text && !isToolMarkup(text) ? text : null
+  const user = `FILE EXCERPTS (numbered lines):\n\n${excerpts}`
+  // Free-модель может ответить пустотой или тул-разметкой даже на свежий
+  // no-tools вызов — пробуем до двух раз. Вёрдикт обязан быть JSON'ом.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const turn = await chatViaPi(
+      registry,
+      model,
+      buildFallbackReviewPrompt(),
+      [{ role: "user", content: [{ type: "text", text: user }] }],
+      undefined, // без тулов
+      signal,
+      8000, // вердикт с находками может быть длинным
+    )
+    const text = extractText(turn.content)
+    // ВРЕМЕННЫЙ дебаг-лог: понять, что реально возвращает free-модель на
+    // свежий no-tools вызов (пусто/тул-разметка/вердикт). Убрать после.
+    try {
+      const { appendFileSync } = await import("node:fs")
+      appendFileSync(
+        "C:/Users/user/.pi/ultra-review-fallback-debug.log",
+        `${new Date().toISOString()} attempt=${attempt} stop=${turn.stopReason} hasToolCalls=${(turn.content ?? []).some((c: { type?: string }) => c.type === "toolCall")} contentLen=${text.length} preview=${JSON.stringify(text.slice(0, 300))}\n`,
+      )
+    } catch {}
+    if (text && !isToolMarkup(text)) return text
+  }
+  return null
 }
 
 /**
