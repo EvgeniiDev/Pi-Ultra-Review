@@ -443,32 +443,40 @@ export async function runAgentLoop(
     const n = normalizeToolMarkup(s)
     return /<invoke\s/i.test(n) || /<tool_calls>/i.test(n) || /<antml>/i.test(n) || /<|DSML/i.test(n)
   }
-  if (!text.trim() || looksLikeToolCallText(text)) {
-    const verdictMsg = !text.trim()
+  const extractSubmitVerdict = (content: unknown[]): string => {
+    const submit = extractToolCalls(content).find((c) => c.name === "submit_review")
+    if (!submit) return ""
+    const v = submit.arguments?.verdict
+    return typeof v === "string"
+      ? v.trim()
+      : typeof v === "object" && v !== null
+        ? JSON.stringify(v)
+        : ""
+  }
+  // До двух nudging-вызовов: первый предлагает submit_review-разметку, второй —
+  // готовый JSON-шаблон (free-модель зацикливается на read_file; шаблон ломает
+  // цикл). Если всё равно тул-разметка — отдаём накопленный текст.
+  const nudgeMessages = [
+    !text.trim()
       ? "Output your final verdict JSON now based on what you have read. If you prefer, emit it as: <invoke name=\"submit_review\"><parameter name=\"verdict\" string=\"true\">{\"context\":\"FULL\",\"findings\":[]}</parameter></invoke>"
-      : "Tool calls are no longer available. Submit the final review verdict NOW, either as the JSON directly, or (if you must) as: <invoke name=\"submit_review\"><parameter name=\"verdict\" string=\"true\">{\"context\":\"FULL\",\"findings\":[]}</parameter></invoke>"
+      : "Tool calls are no longer available. Submit the final review verdict NOW, either as the JSON directly, or (if you must) as: <invoke name=\"submit_review\"><parameter name=\"verdict\" string=\"true\">{\"context\":\"FULL\",\"findings\":[]}</parameter></invoke>",
+    "Do NOT call read_file again — reading is complete. Fill in and output ONLY this JSON template (valid JSON, real values): {\"context\":\"FULL\",\"findings\":[{\"severity\":\"low|medium|high|critical\",\"category\":\"...\",\"file\":\"...\",\"line\":1,\"lineEnd\":null,\"title\":\"...\",\"description\":\"...\",\"evidence\":\"...\"}]}",
+  ]
+  for (let n = 0; n < nudgeMessages.length && (!text.trim() || looksLikeToolCallText(text)); n++) {
     const nudge = await chat(
-      [...messages, { role: "user", content: [{ type: "text", text: verdictMsg }], timestamp: Date.now() }],
+      [...messages, { role: "user", content: [{ type: "text", text: nudgeMessages[n] }], timestamp: Date.now() }],
       [],
       signal,
     )
     text = extractText(nudge.content)
-    // Модель может и на нодж ответить submit_review-разметкой — вытаскиваем.
-    const submitCalls = extractToolCalls(nudge.content)
-    const submit = submitCalls.find((c) => c.name === "submit_review")
-    if (submit) {
-      const v = submit.arguments?.verdict
-      const verdict =
-        typeof v === "string"
-          ? v.trim()
-          : typeof v === "object" && v !== null
-            ? JSON.stringify(v)
-            : ""
-      if (verdict) text = verdict
+    const verdict = extractSubmitVerdict(nudge.content)
+    if (verdict) {
+      text = verdict
+      break
     }
-    // Всё ещё тул-разметка? Отдаём весь накопленный текст — если JSON-вердикт
-    // был написан прозой в одной из итераций, движок его найдёт.
-    if (looksLikeToolCallText(text)) text = allTexts.join("\n\n")
   }
+  // Всё ещё тул-разметка? Отдаём весь накопленный текст — если JSON-вердикт
+  // был написан прозой в одной из итераций, движок его найдёт.
+  if (looksLikeToolCallText(text)) text = allTexts.join("\n\n")
   return { text, iterations: maxIterations, toolCalls }
 }

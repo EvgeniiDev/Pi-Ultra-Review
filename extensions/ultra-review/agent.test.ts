@@ -362,3 +362,36 @@ test("JSON verdict written in prose mid-loop survives: accumulated texts returne
   expect(res.text).toContain('"context":"FULL"')
   expect(res.text).toContain("src/a.ts")
 })
+
+test("second fill-in-template nudge pulls a verdict when the first nudge re-emits tool markup", async () => {
+  let calls = 0
+  const toolBlock = '<tool_calls>\n<invoke name="read_file">\n<parameter name="path">src/a.ts</parameter>\n</invoke>\n</tool_calls>'
+  const chat = async (messages: unknown[], _tools: unknown[]) => {
+    assertProtocol(messages as Msg[])
+    calls++
+    if (calls === 3) {
+      // Ответ на второй нодж (шаблон-заполнялка): модель выдаёт вердикт-форму.
+      const text = '{"context":"FULL","findings":[{"severity":"low","category":"c","file":"src/a.ts","line":1,"lineEnd":null,"title":"t","description":"d","evidence":"e"}]}'
+      return {
+        assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
+        content: [{ type: "text", text }],
+        stopReason: "text",
+      }
+    }
+    return {
+      assistantMessage: { role: "assistant", content: [{ type: "text", text: toolBlock }] },
+      content: [{ type: "text", text: toolBlock }],
+      stopReason: "text",
+    }
+  }
+  const res = await runAgentLoop(
+    chat as never,
+    [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
+    [],
+    async () => ({ ok: true, text: "contents" }),
+    { maxIterations: 1, maxToolCalls: 10 }, // 1 итерация + 2 ноджа (calls 1,2,3)
+    undefined,
+  )
+  expect(res.text).toBe('{"context":"FULL","findings":[{"severity":"low","category":"c","file":"src/a.ts","line":1,"lineEnd":null,"title":"t","description":"d","evidence":"e"}]}')
+  expect(calls).toBe(3)
+})
