@@ -712,6 +712,25 @@ export interface JudgeFindingInput {
   spec: string
 }
 
+/**
+ * Промпт для СВЕЖЕГО no-tools ревью-фолбэка: агентный цикл прочитал файлы,
+ * но модель так и не выдала вердикт (тул-спираль). Отдаём ей эксцерпты
+ * напрямую, БЕЗ тулов и БЕЗ тул-истории — модель отвечает JSON'ом.
+ */
+export function buildFallbackReviewPrompt(): string {
+  return [
+    "You are a senior code reviewer. Below you will receive file excerpts from a repository (numbered lines, file name and line count on each block).",
+    "Produce a review verdict as a SINGLE JSON object, nothing else — no tool calls, no prose, no markdown fences.",
+    "The JSON must be exactly:",
+    '{"context":"FULL","findings":[{"severity":"low|medium|high|critical","category":"...","file":"...","line":1,"lineEnd":null,"title":"...","description":"...","evidence":"..."}]}',
+    'If there are no real issues, return {"context":"FULL","findings":[]}.',
+    "- severity: low|medium|high|critical.",
+    "- category: incorrect_parsing | wrong_type | off_by_one | race_condition | incorrect_termination | incorrect_order | missing_error_handling | robustness | error_propagation | security | resource_leak | performance | logic | misleading_name | inconsistent_terminology | inconsistent_style | api_design | unused_code | copy_paste | duplication | null_safety | test_quality.",
+    "- file: repository-relative path. line/lineEnd: 1-based line numbers as given.",
+    "- Only report real, concrete defects you can ground in the excerpts. Do not invent issues.",
+  ].join("\n")
+}
+
 export function buildJudgePrompt(scope: { files: string[]; diff?: string }, findings: JudgeFindingInput[]): string {
   const { text: rawDiff } = truncateDiff(scope.diff ?? "")
   const filesText = renderFileList(scope.files)

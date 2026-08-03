@@ -1,8 +1,9 @@
 import { complete, type UserMessage } from "@earendil-works/pi-ai/compat"
 import type { Api, Message, Model, Tool } from "@earendil-works/pi-ai"
 import { Type } from "@sinclair/typebox"
-import { makeExecutor, runAgentLoop, type AgentChat, type AgentTurn } from "./agent.ts"
+import { extractText, isToolMarkup, makeExecutor, runAgentLoop, type AgentChat, type AgentTurn } from "./agent.ts"
 import { EMPTY_RESPONSE_RETRIES, MODEL_MAX_TOKENS, MODEL_TEMPERATURE, RETRY_DELAY_MS, SIMPLIFY_MAX_ITERATIONS, SIMPLIFY_MAX_TOOL_CALLS } from "./constants.ts"
+import { buildFallbackReviewPrompt } from "./prompts.ts"
 import { retryOnEmpty, retryOnFailure } from "./retry.ts"
 import type { PiModelLike, PiRegistryLike } from "./types.ts"
 
@@ -114,6 +115,32 @@ export async function chatViaPi(
 }
 
 /**
+ * Свежий no-tools ревью-фолбэк: агентный цикл прочитал файлы (readResults),
+ * но модель так и не выдала вердикт — тул-история держит free-модель в
+ * режиме «читать вечно». Отдаём эксцерпты НАПРЯМУЮ в новый диалог без тулов
+ * и без тул-истории: модель отвечает полноценным JSON-вердиктом.
+ */
+async function fallbackReview(
+  registry: PiRegistryLike,
+  model: PiModelLike,
+  readResults: string[],
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const excerpts = readResults.join("\n\n---\n\n").slice(0, 60_000)
+  if (!excerpts.trim()) return null
+  const turn = await chatViaPi(
+    registry,
+    model,
+    buildFallbackReviewPrompt(),
+    [{ role: "user", content: [{ type: "text", text: `FILE EXCERPTS (numbered lines):\n\n${excerpts}` }] }],
+    undefined, // без тулов
+    signal,
+  )
+  const text = extractText(turn.content)
+  return text && !isToolMarkup(text) ? text : null
+}
+
+/**
  * Полный агентный прогон ревью: модель сама читает файлы из репозитория
  * (root) через read_file и выносит вердикт. Пустой итог ретраится.
  * Фолбэка без тулов НЕТ: если провайдер/модель не поддерживает тулы —
@@ -144,6 +171,13 @@ export async function runAgent(
       maxToolCalls: opts.maxToolCalls ?? 30,
     }, signal)
     toolCalls = loop.toolCalls
+    // Финальный текст — не вердикт (тул-спираль/пусто)? Тогда свежий no-tools
+    // ревью-фолбэк по прочитанным эксцерптам. Диагностика подтвердила: free-
+    // модель отлично ревьюит, когда ей дают содержимое напрямую и без тулов.
+    if (isToolMarkup(loop.text) || !loop.text.trim() || !loop.text.includes('"findings"')) {
+      const fresh = await fallbackReview(registry, model, loop.readResults, signal)
+      if (fresh) return fresh
+    }
     return loop.text
   }
 

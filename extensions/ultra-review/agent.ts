@@ -247,6 +247,8 @@ export interface AgentLoopResult {
   text: string
   iterations: number
   toolCalls: number
+  /** Реальные результаты чтений (контент toolResult), собранные за цикл. */
+  readResults: string[]
 }
 
 export function extractText(content: unknown[]): string {
@@ -272,6 +274,12 @@ export function normalizeToolMarkup(text: string): string {
     .replace(/[\uFF1E]/g, ">")
     .replace(/<\|DSML\|/g, "<")
     .replace(/<\/\|DSML\|/g, "</")
+}
+
+/** Текст — это всё ещё тул-разметка (read_file/submit_review и т.п.), а не ответ. */
+export function isToolMarkup(text: string): boolean {
+  const n = normalizeToolMarkup(text)
+  return /<invoke\s/i.test(n) || /<tool_calls>/i.test(n) || /<antml>/i.test(n) || /<|DSML/i.test(n)
 }
 
 function parseInvokeToolCalls(text: string): AgentToolCall[] {
@@ -352,6 +360,8 @@ export async function runAgentLoop(
   // JSON-вердикт модель успела написать прозой в одной из ранних итераций,
   // движок найдёт его в накопленном тексте (jsonCandidates сканирует всё).
   const allTexts: string[] = []
+  // Содержимое прочитанных файлов (для свежего no-tools ревью-фолбэка).
+  const readResults: string[] = []
 
   for (let iteration = 0; iteration < maxIterations; iteration++) {
     // Последняя итерация (или исчерпанный бюджет) — без тулов: модель обязана ответить.
@@ -376,11 +386,11 @@ export async function runAgentLoop(
           : typeof v === "object" && v !== null
             ? JSON.stringify(v)
             : ""
-      if (verdict) return { text: verdict, iterations: iteration + 1, toolCalls }
+      if (verdict) return { text: verdict, iterations: iteration + 1, toolCalls, readResults }
     }
 
     if (calls.length === 0) {
-      return { text: textPart || text, iterations: iteration + 1, toolCalls }
+      return { text: textPart || text, iterations: iteration + 1, toolCalls, readResults }
     }
     if (isLast) {
       // Модель всё ещё просит тулы, хотя их больше нет — уходим к nudging-финалу.
@@ -423,6 +433,7 @@ export async function runAgentLoop(
     for (const { c, res } of results) {
       const payload = res.ok ? res.text : `ERROR: ${res.error}`
       contextChars += payload.length
+      readResults.push(payload)
       messages.push({
         role: "toolResult",
         toolCallId: c.id ?? "tool",
@@ -439,10 +450,6 @@ export async function runAgentLoop(
   // тул-вызов ТЕКСТОМ (релей не отдаёт структуру), break оставлял текст-
   // тул в качестве результата, вердикт-запрос модель НИКОГДА не получала →
   // malformed. Теперь нодж идёт и если финальный текст — это всё ещё тул-блок.
-  const looksLikeToolCallText = (s: string) => {
-    const n = normalizeToolMarkup(s)
-    return /<invoke\s/i.test(n) || /<tool_calls>/i.test(n) || /<antml>/i.test(n) || /<|DSML/i.test(n)
-  }
   const extractSubmitVerdict = (content: unknown[]): string => {
     const submit = extractToolCalls(content).find((c) => c.name === "submit_review")
     if (!submit) return ""
@@ -462,7 +469,7 @@ export async function runAgentLoop(
       : "Tool calls are no longer available. Submit the final review verdict NOW, either as the JSON directly, or (if you must) as: <invoke name=\"submit_review\"><parameter name=\"verdict\" string=\"true\">{\"context\":\"FULL\",\"findings\":[]}</parameter></invoke>",
     "Do NOT call read_file again — reading is complete. Fill in and output ONLY this JSON template (valid JSON, real values): {\"context\":\"FULL\",\"findings\":[{\"severity\":\"low|medium|high|critical\",\"category\":\"...\",\"file\":\"...\",\"line\":1,\"lineEnd\":null,\"title\":\"...\",\"description\":\"...\",\"evidence\":\"...\"}]}",
   ]
-  for (let n = 0; n < nudgeMessages.length && (!text.trim() || looksLikeToolCallText(text)); n++) {
+  for (let n = 0; n < nudgeMessages.length && (!text.trim() || isToolMarkup(text)); n++) {
     const nudge = await chat(
       [...messages, { role: "user", content: [{ type: "text", text: nudgeMessages[n] }], timestamp: Date.now() }],
       [],
@@ -477,6 +484,6 @@ export async function runAgentLoop(
   }
   // Всё ещё тул-разметка? Отдаём весь накопленный текст — если JSON-вердикт
   // был написан прозой в одной из итераций, движок его найдёт.
-  if (looksLikeToolCallText(text)) text = allTexts.join("\n\n")
-  return { text, iterations: maxIterations, toolCalls }
+  if (isToolMarkup(text)) text = allTexts.join("\n\n")
+  return { text, iterations: maxIterations, toolCalls, readResults }
 }

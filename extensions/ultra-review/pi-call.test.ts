@@ -33,9 +33,10 @@ mock.module("./constants.ts", () => ({
   MODEL_TEMPERATURE: 0.3,
   SIMPLIFY_MAX_ITERATIONS: 10,
   SIMPLIFY_MAX_TOOL_CALLS: 40,
+  MAX_DIFF_CHARS: 60_000,
 }))
 
-const { chatViaPi } = await import("./pi-call.ts")
+const { chatViaPi, runAgent } = await import("./pi-call.ts")
 
 const fakeRegistry = {
   getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key", headers: {}, env: {} }),
@@ -108,4 +109,38 @@ test("thrown не-retryable исключение → без ретраев", asy
   }
   await expect(call()).rejects.toThrow(/boom/)
   expect(completeCalls).toBe(1)
+})
+
+test("runAgent: tool-spiral loop text triggers fresh no-tools fallback review", async () => {
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises")
+  const { tmpdir } = await import("node:os")
+  const { join } = await import("node:path")
+  const dir = await mkdtemp(join(tmpdir(), "ur-fallback-"))
+  try {
+    await writeFile(join(dir, "a.py"), "def f():\n    return undefined_var\n")
+
+    const verdict = '{"context":"FULL","findings":[{"severity":"critical","category":"logic","file":"a.py","line":2,"lineEnd":null,"title":"t","description":"d","evidence":"e"}]}'
+    let n = 0
+    completeImpl = async () => {
+      n++
+      if (n === 1) {
+        // maxIterations=1 → isLast: структурный read_file, цикл выходит без текста.
+        const content = [{ type: "toolCall", id: "call-1", name: "read_file", arguments: { path: "a.py" } }]
+        return { stopReason: "toolUse", content, assistantMessage: { role: "assistant", content } }
+      }
+      if (n <= 3) {
+        // Оба ноджа — снова тул-разметка текстом (модель зациклилась).
+        const text = '<tool_calls>\n<invoke name="read_file">\n<parameter name="path">a.py</parameter>\n</invoke>\n</tool_calls>'
+        return { stopReason: "text", content: [{ type: "text", text }], assistantMessage: { role: "assistant", content: [{ type: "text", text }] } }
+      }
+      // 4-й вызов — СВЕЖИЙ no-tools фолбэк: модель отвечает вердиктом.
+      return { stopReason: "end_turn", content: [{ type: "text", text: verdict }], assistantMessage: { role: "assistant", content: [{ type: "text", text: verdict }] } }
+    }
+
+    const res = await runAgent(fakeRegistry as never, fakeModel as never, "sys", dir, undefined, { maxIterations: 1, maxToolCalls: 10 })
+    expect(res.text).toBe(verdict)
+    expect(n).toBe(4) // 1 итерация + 2 ноджа + свежий фолбэк
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
