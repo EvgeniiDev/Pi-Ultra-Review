@@ -72,6 +72,12 @@ test("error-stopReason 'Request timed out.' тоже retryable и ретраит
   expect(completeCalls).toBe(2) // initial + 1 retry
 })
 
+test("5xx upstream error ('fetch failed') ретраится", async () => {
+  completeImpl = async () => ({ stopReason: "error", errorMessage: '502: {"message":"upstream error: TypeError: fetch failed"}' })
+  await expect(call()).rejects.toThrow(/fetch failed/)
+  expect(completeCalls).toBe(4) // initial + 3 retries, потом падение
+})
+
 test("исчерпание ретраев error-stopReason → пробрасывается как ошибка", async () => {
   completeImpl = async () => ({ stopReason: "error", errorMessage: "Stream ended without finish_reason" })
   await expect(call()).rejects.toThrow(/Stream ended without finish_reason/)

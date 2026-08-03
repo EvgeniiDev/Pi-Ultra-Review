@@ -56,16 +56,16 @@ export async function chatViaPi(
   const auth = await registry.getApiKeyAndHeaders(fullModel)
   if (!auth.ok) throw new Error(`No credentials for ${model.provider}: ${auth.error ?? "unknown"}`)
 
-  // 429/rate-limit — временный сбой провайдера: ретраится ОДИН вызов complete
-  // (не весь агентный цикл — рестарт цикла на каждой попытке раздувает прогон).
-  // "Stream ended without finish_reason" / "Request timed out." — оборванный
-  // апстримом стрим и таймаут (часто на free-тире через релей): тоже временные
-  // сбои, ретраим до 3 раз (free-тир флакит заметно чаще платных).
+  // Free-tier релей отдаёт разные временные транспортные сбои: 429, 5xx,
+  // "Stream ended without finish_reason", "Request timed out.", "fetch failed",
+  // upstream-ошибки. Все они ретраятся до 3 раз (не весь агентный цикл — просто
+  // повторный вызов complete). 401/403 (авторизация) намеренно НЕ в списке —
+  // это постоянная ошибка, ретрай бессмыслен.
   // Ошибка может прийти ДВУМЯ путями: исключение из complete() либо graceful
   // error-ответ (stopReason === "error") — второй путь ретраится здесь же,
   // бросая retryable-ошибку из замыкания, чтобы её подхватил retryOnFailure.
   const isRetryable = (e: unknown) =>
-    /429|rate\s*limit|stream ended|timed out|timeout|took too long/i.test(
+    /429|5\d\d|rate\s*limit|stream ended|timed out|timeout|took too long|fetch failed|upstream|socket|econn|enotfound|network/i.test(
       (e as Error).message ?? "",
     )
   const response = await retryOnFailure(
