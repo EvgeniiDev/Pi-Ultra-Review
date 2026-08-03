@@ -319,3 +319,46 @@ test("structured submit_review with object verdict is JSON-stringified", async (
   )
   expect(res.text).toBe(JSON.stringify(verdictObj))
 })
+
+test("JSON verdict written in prose mid-loop survives: accumulated texts returned when final is tool markup", async () => {
+  let calls = 0
+  const chat = async (messages: unknown[], _tools: unknown[]) => {
+    assertProtocol(messages as Msg[])
+    calls++
+    if (calls === 1) {
+      const text = '<tool_calls>\n<invoke name="read_file">\n<parameter name="path">src/a.ts</parameter>\n</invoke>\n</tool_calls>'
+      return {
+        assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
+        content: [{ type: "text", text }],
+        stopReason: "text",
+      }
+    }
+    if (calls === 2) {
+      // Модель написала вердикт ПРОЗОЙ и тут же снова попросила тул.
+      const text =
+        '{"context":"FULL","findings":[{"severity":"medium","file":"src/a.ts","line":5,"title":"t","description":"d","evidence":"e"}]}\n<tool_calls>\n<invoke name="read_file">\n<parameter name="path">src/b.ts</parameter>\n</invoke>\n</tool_calls>'
+      return {
+        assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
+        content: [{ type: "text", text }],
+        stopReason: "text",
+      }
+    }
+    // Нодж и все последующие — снова тул-разметка (модель зациклилась).
+    const text = '<tool_calls>\n<invoke name="read_file">\n<parameter name="path">src/c.ts</parameter>\n</invoke>\n</tool_calls>'
+    return {
+      assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
+      content: [{ type: "text", text }],
+      stopReason: "text",
+    }
+  }
+  const res = await runAgentLoop(
+    chat as never,
+    [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
+    [],
+    async () => ({ ok: true, text: "contents" }),
+    { maxIterations: 2, maxToolCalls: 30 }, // 2 итерации + нодж (calls 1,2,3)
+    undefined,
+  )
+  expect(res.text).toContain('"context":"FULL"')
+  expect(res.text).toContain("src/a.ts")
+})

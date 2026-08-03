@@ -348,6 +348,10 @@ export async function runAgentLoop(
   let contextChars = 0
   let forceFinish = false
   let text = ""
+  // Все текстовые ответы модели за итерации: если финал — тул-разметка, а
+  // JSON-вердикт модель успела написать прозой в одной из ранних итераций,
+  // движок найдёт его в накопленном тексте (jsonCandidates сканирует всё).
+  const allTexts: string[] = []
 
   for (let iteration = 0; iteration < maxIterations; iteration++) {
     // Последняя итерация (или исчерпанный бюджет) — без тулов: модель обязана ответить.
@@ -355,7 +359,10 @@ export async function runAgentLoop(
     const turn = await chat(messages, isLast ? [] : tools, signal)
     const calls = extractToolCalls(turn.content)
     const textPart = extractText(turn.content)
-    if (textPart) text = textPart
+    if (textPart) {
+      text = textPart
+      allTexts.push(textPart)
+    }
 
     // Вердикт через submit_review: свободная модель охотно вызывает тулы и не
     // пишет JSON прозой — принимаем вердикт из аргумента тула (структурного
@@ -438,8 +445,8 @@ export async function runAgentLoop(
   }
   if (!text.trim() || looksLikeToolCallText(text)) {
     const verdictMsg = !text.trim()
-      ? "Output your final verdict JSON now based on what you have read."
-      : "Tool calls are no longer available. Output ONLY the final review verdict JSON now, grounded in the file contents already provided above."
+      ? "Output your final verdict JSON now based on what you have read. If you prefer, emit it as: <invoke name=\"submit_review\"><parameter name=\"verdict\" string=\"true\">{\"context\":\"FULL\",\"findings\":[]}</parameter></invoke>"
+      : "Tool calls are no longer available. Submit the final review verdict NOW, either as the JSON directly, or (if you must) as: <invoke name=\"submit_review\"><parameter name=\"verdict\" string=\"true\">{\"context\":\"FULL\",\"findings\":[]}</parameter></invoke>"
     const nudge = await chat(
       [...messages, { role: "user", content: [{ type: "text", text: verdictMsg }], timestamp: Date.now() }],
       [],
@@ -459,6 +466,9 @@ export async function runAgentLoop(
             : ""
       if (verdict) text = verdict
     }
+    // Всё ещё тул-разметка? Отдаём весь накопленный текст — если JSON-вердикт
+    // был написан прозой в одной из итераций, движок его найдёт.
+    if (looksLikeToolCallText(text)) text = allTexts.join("\n\n")
   }
   return { text, iterations: maxIterations, toolCalls }
 }

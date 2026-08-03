@@ -497,6 +497,12 @@ ${specId === "simplify"
 - When you are confident about the findings, call submit_review with the
   complete verdict JSON in the verdict argument — NEVER write the JSON in
   prose; the review is not finished until submit_review is called.
+- To submit, emit a tool call exactly like this:
+  <invoke name="submit_review"><parameter name="verdict" string="true">{"context":"FULL","findings":[]}</parameter></invoke>
+  The verdict argument is the COMPLETE review JSON object described in the
+  output contract below.
+- You cannot read every file in a large repository. Read a representative
+  sample (a few of the most relevant files), then submit.
 
 # TRUST BOUNDARY
 
