@@ -257,14 +257,6 @@ export function extractText(content: unknown[]): string {
     .trim()
 }
 
-export function extractText(content: unknown[]): string {
-  return content
-    .filter((e): e is { text: string } => typeof e === "object" && e !== null && typeof (e as { text?: unknown }).text === "string")
-    .map((e) => e.text)
-    .join("\n")
-    .trim()
-}
-
 // Иногда (free-тир через релей) модель не возвращает тулы структурно — она
 // печатает их ТЕКСТОМ в Anthropic-нотации `<invoke name="read_file">` c
 // `<parameter name="path">./x</parameter>`. extractToolCalls их не видел, цикл
@@ -278,12 +270,22 @@ function parseInvokeToolCalls(text: string): AgentToolCall[] {
     const name = m[1]
     const body = m[2]
     const args: Record<string, unknown> = {}
-    // <parameter name="X" value="Y" ... /> — самозакрывающий
-    const selfRe = /<parameter\s+name="([^"]+)"\s+value="([^"]*)"\s*\/?>/gi
-    for (const mm of body.matchAll(selfRe)) args[mm[1]] = mm[2]
-    // <parameter name="X">Y</parameter> — вложенная форма
-    const nestedRe = /<parameter\s+name="([^"]+)">([\s\S]*?)<\/parameter>/gi
-    for (const mm of body.matchAll(nestedRe)) if (!(mm[1] in args)) args[mm[1]] = mm[2].trim()
+    // Модель пишет параметры двумя способами, с любыми доп. атрибутами:
+    //   <parameter name="path" string="true">.swarm/x</parameter>  — вложенный
+    //   <parameter name="startLine" value="1"/>                 — атрибут
+    const paramRe = /<parameter\s+name="([^"]+)"\s*([^>]*)>/gi
+    for (const mm of body.matchAll(paramRe)) {
+      const pname = mm[1]
+      const attrs = mm[2]
+      const valAttr = /value="([^"]*)"/.exec(attrs)
+      if (valAttr) {
+        args[pname] = valAttr[1]
+        continue
+      }
+      const rest = body.slice(mm.index + mm[0].length)
+      const endM = /<\/parameter\s*>/i.exec(rest)
+      if (endM) args[pname] = rest.slice(0, endM.index).trim()
+    }
     out.push({ id: `text-${++textToolCallId}`, name, arguments: args })
   }
   return out

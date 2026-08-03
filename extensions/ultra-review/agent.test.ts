@@ -162,7 +162,7 @@ test("textual <invoke> tool call is parsed and executed, then verdict", async ()
     calls++
     if (calls === 1) {
       const text =
-        '<|tool_calls|>\n<invoke name="read_file">\n<parameter name="path">src/a.ts</parameter>\n<parameter name="startLine" value="1"/>\n</invoke>'
+        '<|tool_calls|>\n<invoke name="read_file">\n<parameter name="path" string="true">src/a.ts</parameter>\n<parameter name="startLine" value="1"/>\n</invoke>'
       return {
         assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
         content: [{ type: "text", text }],
