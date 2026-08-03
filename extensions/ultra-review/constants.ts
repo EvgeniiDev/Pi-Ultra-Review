@@ -8,7 +8,9 @@ export const PROMPT_VERSION = "2026-08-03.json"
 // Параллельность ревью: не больше PROVIDER_MAX_CONCURRENCY одновременных
 // запросов к одному провайдеру и не больше GLOBAL_MAX_CONCURRENCY всего,
 // чтобы не долбить провайдера кучей запросов (rate-limit, socket exhaustion).
-export const PROVIDER_MAX_CONCURRENCY = 2
+// 1 на провайдера: zen-relay free-тир рвёт стримы под параллельной нагрузкой —
+// последовательные запросы заметно стабильнее (платные модели тоже переживут).
+export const PROVIDER_MAX_CONCURRENCY = 1
 export const GLOBAL_MAX_CONCURRENCY = 10
 
 // Параметры вызова модели.

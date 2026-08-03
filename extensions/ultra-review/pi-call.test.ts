@@ -52,18 +52,30 @@ test("error-stopReason 'Stream ended' ретраится (2 попытки) и �
   let n = 0
   completeImpl = async () => {
     n++
-    if (n <= 2) return { stopReason: "error", errorMessage: "Stream ended without finish_reason" }
+    if (n <= 3) return { stopReason: "error", errorMessage: "Stream ended without finish_reason" }
     return { stopReason: "end_turn", content: [] }
   }
   const turn = await call()
   expect(turn.stopReason).toBe("end_turn")
-  expect(completeCalls).toBe(3) // initial + 2 retries
+  expect(completeCalls).toBe(4) // initial + 3 retries
+})
+
+test("error-stopReason 'Request timed out.' тоже retryable и ретраится", async () => {
+  let n = 0
+  completeImpl = async () => {
+    n++
+    if (n === 1) return { stopReason: "error", errorMessage: "Request timed out." }
+    return { stopReason: "end_turn", content: [] }
+  }
+  const turn = await call()
+  expect(turn.stopReason).toBe("end_turn")
+  expect(completeCalls).toBe(2) // initial + 1 retry
 })
 
 test("исчерпание ретраев error-stopReason → пробрасывается как ошибка", async () => {
   completeImpl = async () => ({ stopReason: "error", errorMessage: "Stream ended without finish_reason" })
   await expect(call()).rejects.toThrow(/Stream ended without finish_reason/)
-  expect(completeCalls).toBe(3) // initial + 2 retries, потом падение
+  expect(completeCalls).toBe(4) // initial + 3 retries, потом падение
 })
 
 test("не-retryable error-stopReason (401) → мгновенный бросок без ретраев", async () => {
@@ -76,12 +88,12 @@ test("thrown 429 исключение ретраится и восстанавл
   let n = 0
   completeImpl = async () => {
     n++
-    if (n === 1) throw new Error("429 rate limit exceeded")
+    if (n <= 2) throw new Error("429 rate limit exceeded")
     return { stopReason: "end_turn", content: [] }
   }
   const turn = await call()
   expect(turn.stopReason).toBe("end_turn")
-  expect(completeCalls).toBe(2)
+  expect(completeCalls).toBe(3) // initial + 2 retries
 })
 
 test("thrown не-retryable исключение → без ретраев", async () => {

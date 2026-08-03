@@ -58,13 +58,14 @@ export async function chatViaPi(
 
   // 429/rate-limit — временный сбой провайдера: ретраится ОДИН вызов complete
   // (не весь агентный цикл — рестарт цикла на каждой попытке раздувает прогон).
-  // "Stream ended without finish_reason" — оборванный апстримом стрим (часто
-  // на free-тире через релей): тоже временный сбой, ретраим один раз.
+  // "Stream ended without finish_reason" / "Request timed out." — оборванный
+  // апстримом стрим и таймаут (часто на free-тире через релей): тоже временные
+  // сбои, ретраим до 3 раз (free-тир флакит заметно чаще платных).
   // Ошибка может прийти ДВУМЯ путями: исключение из complete() либо graceful
   // error-ответ (stopReason === "error") — второй путь ретраится здесь же,
   // бросая retryable-ошибку из замыкания, чтобы её подхватил retryOnFailure.
   const isRetryable = (e: unknown) =>
-    /429|rate\s*limit|stream ended without finish_reason/i.test(
+    /429|rate\s*limit|stream ended|timed out|timeout|took too long/i.test(
       (e as Error).message ?? "",
     )
   const response = await retryOnFailure(
@@ -84,7 +85,7 @@ export async function chatViaPi(
         return r
       }),
     isRetryable,
-    2,
+    3,
     RETRY_DELAY_MS,
     signal,
   )
