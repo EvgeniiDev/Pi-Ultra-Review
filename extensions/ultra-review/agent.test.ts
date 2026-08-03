@@ -229,3 +229,44 @@ test("textual tool calls to the last iteration trigger a final no-tools verdict 
   expect(res.text).toBe('{"context":"FULL","findings":[]}')
   expect(calls).toBe(2) // 1 (тул-текст) + финальный нодж
 })
+
+test("DSML fullwidth <｜DSML｜invoke> tool call is normalized, parsed and executed", async () => {
+  let calls = 0
+  const executed: Array<{ name: string; args: Record<string, unknown> }> = []
+  const chat = async (messages: unknown[], _tools: unknown[]) => {
+    assertProtocol(messages as Msg[])
+    calls++
+    if (calls === 1) {
+      // Полная ширина (U+FF5C ｜, U+FF1C ＜, U+FF1E ＞) + DSML-префиксы.
+      const text =
+        '＜｜DSML｜tool_calls＞\n＜｜DSML｜invoke name="read_file"＞\n＜｜DSML｜parameter name="path" string="true"＞src/a.ts＜／｜DSML｜parameter＞\n＜／｜DSML｜invoke＞\n＜／｜DSML｜tool_calls＞'
+      return {
+        assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
+        content: [{ type: "text", text }],
+        stopReason: "text",
+      }
+    }
+    return {
+      assistantMessage: { role: "assistant", content: [{ type: "text", text: '{"context":"FULL","findings":[]}' }] },
+      content: [{ type: "text", text: '{"context":"FULL","findings":[]}' }],
+      stopReason: "end",
+    }
+  }
+  const localExecutor: AgentExecutor = async (call) => {
+    executed.push({ name: call.name ?? "", args: (call.arguments as Record<string, unknown>) ?? {} })
+    return { ok: true, text: "contents of src/a.ts" }
+  }
+  const res = await runAgentLoop(
+    chat as never,
+    [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
+    [],
+    localExecutor,
+    { maxIterations: 5, maxToolCalls: 10 },
+    undefined,
+  )
+  expect(executed).toHaveLength(1)
+  expect(executed[0].name).toBe("read_file")
+  expect(executed[0].args).toEqual({ path: "src/a.ts" })
+  expect(res.text).toBe('{"context":"FULL","findings":[]}')
+  expect(calls).toBe(2)
+})

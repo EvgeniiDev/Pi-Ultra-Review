@@ -258,15 +258,27 @@ export function extractText(content: unknown[]): string {
 }
 
 // Иногда (free-тир через релей) модель не возвращает тулы структурно — она
-// печатает их ТЕКСТОМ в Anthropic-нотации `<invoke name="read_file">` c
-// `<parameter name="path">./x</parameter>`. extractToolCalls их не видел, цикл
-// завершался без чтения и без вердикта → "malformed". Распознаём и исполняем.
+// печатает их ТЕКСТОМ: Anthropic-нотация `<invoke name="read_file">` или
+// DSML `<|DSML|invoke name=...>`, причём с ПОЛНОЙ шириной символов (U+FF5C
+// ｜, U+FF1C ＜, U+FF1E ＞). extractToolCalls их не видел, цикл завершался без
+// чтения и без вердикта → "malformed". Нормализуем и исполняем.
 let textToolCallId = 0
+
+export function normalizeToolMarkup(text: string): string {
+  return text
+    .replace(/[\uFF5C\uFF5F]/g, "|")
+    .replace(/[\uFF0F]/g, "/")
+    .replace(/[\uFF1C]/g, "<")
+    .replace(/[\uFF1E]/g, ">")
+    .replace(/<\|DSML\|/g, "<")
+    .replace(/<\/\|DSML\|/g, "</")
+}
 
 function parseInvokeToolCalls(text: string): AgentToolCall[] {
   const out: AgentToolCall[] = []
+  const normalized = normalizeToolMarkup(text)
   const invokeRe = /<invoke\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/invoke>/gi
-  for (const m of text.matchAll(invokeRe)) {
+  for (const m of normalized.matchAll(invokeRe)) {
     const name = m[1]
     const body = m[2]
     const args: Record<string, unknown> = {}
@@ -405,7 +417,10 @@ export async function runAgentLoop(
   // тул-вызов ТЕКСТОМ (релей не отдаёт структуру), break оставлял текст-
   // тул в качестве результата, вердикт-запрос модель НИКОГДА не получала →
   // malformed. Теперь нодж идёт и если финальный текст — это всё ещё тул-блок.
-  const looksLikeToolCallText = (s: string) => /<invoke\s/i.test(s) || /<tool_calls>/i.test(s) || /<antml>/i.test(s)
+  const looksLikeToolCallText = (s: string) => {
+    const n = normalizeToolMarkup(s)
+    return /<invoke\s/i.test(n) || /<tool_calls>/i.test(n) || /<antml>/i.test(n) || /<|DSML/i.test(n)
+  }
   if (!text.trim() || looksLikeToolCallText(text)) {
     const verdictMsg = !text.trim()
       ? "Output your final verdict JSON now based on what you have read."
