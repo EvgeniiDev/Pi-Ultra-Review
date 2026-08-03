@@ -400,10 +400,18 @@ export async function runAgentLoop(
     }
   }
 
-  // Финальный nudging-вызов без тулов вместо рестарта всего цикла.
-  if (!text.trim()) {
+  // Финальный nudging-вызов без тулов. Раньше срабатывал только на ПУСТОМ тексте
+  // ("without restartsing loop") — но когда модель на isLast-итерации печатала
+  // тул-вызов ТЕКСТОМ (релей не отдаёт структуру), break оставлял текст-
+  // тул в качестве результата, вердикт-запрос модель НИКОГДА не получала →
+  // malformed. Теперь нодж идёт и если финальный текст — это всё ещё тул-блок.
+  const looksLikeToolCallText = (s: string) => /<invoke\s/i.test(s) || /<tool_calls>/i.test(s) || /<antml>/i.test(s)
+  if (!text.trim() || looksLikeToolCallText(text)) {
+    const verdictMsg = !text.trim()
+      ? "Output your final verdict JSON now based on what you have read."
+      : "Tool calls are no longer available. Output ONLY the final review verdict JSON now, grounded in the file contents already provided above."
     const nudge = await chat(
-      [...messages, { role: "user", content: [{ type: "text", text: "Output your final verdict JSON now based on what you have read." }], timestamp: Date.now() }],
+      [...messages, { role: "user", content: [{ type: "text", text: verdictMsg }], timestamp: Date.now() }],
       [],
       signal,
     )

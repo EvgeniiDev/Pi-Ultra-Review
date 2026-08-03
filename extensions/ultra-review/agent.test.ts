@@ -193,3 +193,39 @@ test("textual <invoke> tool call is parsed and executed, then verdict", async ()
   expect(res.text).toBe('{"context":"FULL","findings":[]}')
   expect(calls).toBe(2)
 })
+
+test("textual tool calls to the last iteration trigger a final no-tools verdict nudge", async () => {
+  let calls = 0
+  const chat = async (messages: unknown[], _tools: unknown[]) => {
+    assertProtocol(messages as Msg[])
+    // Проверяем: финальный нодж должен прийти БЕЗ тулов и требовать вердикт.
+    const lastUser = [...messages].reverse().find((m) => (m as Msg).role === "user")
+    const askedVerdict = JSON.stringify(lastUser?.content ?? "").includes("verdict JSON")
+    calls++
+    if (calls === 1) {
+      // До isLast модель печатает текстовый тул (релей не отдаёт структуру).
+      const text =
+        '<tool_calls>\n<invoke name="read_file">\n<parameter name="path" string="true">src/a.ts</parameter>\n</invoke>\n</tool_calls>'
+      return {
+        assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
+        content: [{ type: "text", text }],
+        stopReason: "text",
+      }
+    }
+    return {
+      assistantMessage: { role: "assistant", content: [{ type: "text", text: '{"context":"FULL","findings":[]}' }] },
+      content: [{ type: "text", text: '{"context":"FULL","findings":[]}' }],
+      stopReason: "end",
+    }
+  }
+  const res = await runAgentLoop(
+    chat as never,
+    [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
+    [],
+    executor,
+    { maxIterations: 1, maxToolCalls: 10 }, // isLast сразу → после break нодж
+    undefined,
+  )
+  expect(res.text).toBe('{"context":"FULL","findings":[]}')
+  expect(calls).toBe(2) // 1 (тул-текст) + финальный нодж
+})
