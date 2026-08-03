@@ -257,12 +257,54 @@ export function extractText(content: unknown[]): string {
     .trim()
 }
 
+export function extractText(content: unknown[]): string {
+  return content
+    .filter((e): e is { text: string } => typeof e === "object" && e !== null && typeof (e as { text?: unknown }).text === "string")
+    .map((e) => e.text)
+    .join("\n")
+    .trim()
+}
+
+// Иногда (free-тир через релей) модель не возвращает тулы структурно — она
+// печатает их ТЕКСТОМ в Anthropic-нотации `<invoke name="read_file">` c
+// `<parameter name="path">./x</parameter>`. extractToolCalls их не видел, цикл
+// завершался без чтения и без вердикта → "malformed". Распознаём и исполняем.
+let textToolCallId = 0
+
+function parseInvokeToolCalls(text: string): AgentToolCall[] {
+  const out: AgentToolCall[] = []
+  const invokeRe = /<invoke\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/invoke>/gi
+  for (const m of text.matchAll(invokeRe)) {
+    const name = m[1]
+    const body = m[2]
+    const args: Record<string, unknown> = {}
+    // <parameter name="X" value="Y" ... /> — самозакрывающий
+    const selfRe = /<parameter\s+name="([^"]+)"\s+value="([^"]*)"\s*\/?>/gi
+    for (const mm of body.matchAll(selfRe)) args[mm[1]] = mm[2]
+    // <parameter name="X">Y</parameter> — вложенная форма
+    const nestedRe = /<parameter\s+name="([^"]+)">([\s\S]*?)<\/parameter>/gi
+    for (const mm of body.matchAll(nestedRe)) if (!(mm[1] in args)) args[mm[1]] = mm[2].trim()
+    out.push({ id: `text-${++textToolCallId}`, name, arguments: args })
+  }
+  return out
+}
+
 export function extractToolCalls(content: unknown[]): AgentToolCall[] {
-  return content.filter((e): e is AgentToolCall => {
+  const structured = content.filter((e): e is AgentToolCall => {
     if (typeof e !== "object" || e === null) return false
     const c = e as { type?: unknown; name?: unknown; arguments?: unknown }
     return c.type === "toolCall" || (typeof c.name === "string" && typeof c.arguments === "object" && c.arguments !== null)
   })
+  // Структурные тулы предпочтительнее; только если их нет — ищем текстовые
+  // <invoke> в текстовых блоках (релей не отдал тулы структурно).
+  if (structured.length > 0) return structured
+  const textual: AgentToolCall[] = []
+  for (const e of content) {
+    if (typeof e !== "object" || e === null) continue
+    const t = (e as { text?: unknown }).text
+    if (typeof t === "string") textual.push(...parseInvokeToolCalls(t))
+  }
+  return textual
 }
 
 /**

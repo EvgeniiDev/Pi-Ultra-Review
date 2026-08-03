@@ -151,3 +151,45 @@ test("no tool calls → single chat round, no protocol concerns", async () => {
   expect(res.text).toBe("done")
   expect(calls).toBe(1)
 })
+
+// Модель прислала тул ТЕКСТОМ (релей не отдал структуру) — extractToolCalls
+// должен распознать <invoke> и исполнить через makeExecutor, потом получить вердикт.
+test("textual <invoke> tool call is parsed and executed, then verdict", async () => {
+  let calls = 0
+  const executed: Array<{ name: string; args: Record<string, unknown> }> = []
+  const chat = async (messages: unknown[], _tools: unknown[]) => {
+    assertProtocol(messages as Msg[])
+    calls++
+    if (calls === 1) {
+      const text =
+        '<|tool_calls|>\n<invoke name="read_file">\n<parameter name="path">src/a.ts</parameter>\n<parameter name="startLine" value="1"/>\n</invoke>'
+      return {
+        assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
+        content: [{ type: "text", text }],
+        stopReason: "text",
+      }
+    }
+    return {
+      assistantMessage: { role: "assistant", content: [{ type: "text", text: '{"context":"FULL","findings":[]}' }] },
+      content: [{ type: "text", text: '{"context":"FULL","findings":[]}' }],
+      stopReason: "end",
+    }
+  }
+  const localExecutor: AgentExecutor = async (call) => {
+    executed.push({ name: call.name ?? "", args: (call.arguments as Record<string, unknown>) ?? {} })
+    return { ok: true, text: "contents of src/a.ts" }
+  }
+  const res = await runAgentLoop(
+    chat as never,
+    [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
+    [],
+    localExecutor,
+    { maxIterations: 5, maxToolCalls: 10 },
+    undefined,
+  )
+  expect(executed).toHaveLength(1)
+  expect(executed[0].name).toBe("read_file")
+  expect(executed[0].args).toEqual({ path: "src/a.ts", startLine: "1" })
+  expect(res.text).toBe('{"context":"FULL","findings":[]}')
+  expect(calls).toBe(2)
+})
