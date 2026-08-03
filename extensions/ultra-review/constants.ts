@@ -16,7 +16,7 @@ export const GLOBAL_MAX_CONCURRENCY = 10
 // Параметры вызова модели.
 // temperature 0.3, а не 0: при 0 DeepSeek-класс модели заметно деградирует.
 export const MODEL_TEMPERATURE = 0.3
-export const MODEL_MAX_TOKENS = 4096
+export const MODEL_MAX_TOKENS = 16384
 
 // Ретрай пустого ответа модели (иногда это временный затуп),
 // задержка растёт линейно: delay, delay*2, ...

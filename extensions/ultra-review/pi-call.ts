@@ -140,16 +140,18 @@ async function fallbackReview(
       [{ role: "user", content: [{ type: "text", text: user }] }],
       undefined, // без тулов
       signal,
-      8000, // вердикт с находками может быть длинным
+      32_000, // вердикт с находками: модели нужен бюджет на мышление + ответ
     )
     const text = extractText(turn.content)
     // ВРЕМЕННЫЙ дебаг-лог: понять, что реально возвращает free-модель на
     // свежий no-tools вызов (пусто/тул-разметка/вердикт). Убрать после.
     try {
       const { appendFileSync } = await import("node:fs")
+      const blocks = (turn.content ?? []) as Array<{ type?: string; text?: string; thinking?: string }>
+      const reasoningChars = blocks.filter((c) => c.type === "thinking").reduce((a, c) => a + (c.thinking?.length ?? 0), 0)
       appendFileSync(
         "C:/Users/user/.pi/ultra-review-fallback-debug.log",
-        `${new Date().toISOString()} attempt=${attempt} stop=${turn.stopReason} hasToolCalls=${(turn.content ?? []).some((c: { type?: string }) => c.type === "toolCall")} contentLen=${text.length} preview=${JSON.stringify(text.slice(0, 300))}\n`,
+        `${new Date().toISOString()} attempt=${attempt} stop=${turn.stopReason} hasToolCalls=${blocks.some((c) => c.type === "toolCall")} contentLen=${text.length} reasoningChars=${reasoningChars} err=${turn.errorMessage ?? ""} preview=${JSON.stringify(text.slice(0, 300))}\n`,
       )
     } catch {}
     if (text && !isToolMarkup(text)) return text
