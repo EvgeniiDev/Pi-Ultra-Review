@@ -75,6 +75,17 @@ export async function chatViaPi(
   const auth = await registry.getApiKeyAndHeaders(fullModel)
   if (!auth.ok) throw new Error(`No credentials for ${model.provider}: ${auth.error ?? "unknown"}`)
 
+  // zen-relay не декларирует supportsReasoningEffort, из-за чего pi-ai молча
+  // выбрасывает reasoning_effort и free-модель думает на полную: мышление
+  // накапливается в контексте (до 180K токенов) и релей абортит генерацию
+  // (502 AbortError). Патчим compat на лету, чтобы reasoning_effert дошёл.
+  const effectiveModel = Object.create(Object.getPrototypeOf(fullModel)) as Model<Api>
+  Object.assign(effectiveModel, fullModel)
+  ;(effectiveModel as { compat?: Record<string, unknown> }).compat = {
+    ...((fullModel as { compat?: Record<string, unknown> }).compat ?? {}),
+    supportsReasoningEffort: true,
+  }
+
   // Free-tier релей отдаёт разные временные транспортные сбои: 429, 5xx,
   // "Stream ended without finish_reason", "Request timed out.", "fetch failed",
   // upstream-ошибки. Все они ретраятся до 3 раз (не весь агентный цикл — просто
@@ -90,7 +101,7 @@ export async function chatViaPi(
   const response = await retryOnFailure(
     `${model.provider}/${model.id}`,
     () =>
-      complete(fullModel, { systemPrompt, messages: messages as Message[], tools }, {
+      complete(effectiveModel, { systemPrompt, messages: messages as Message[], tools }, {
         apiKey: auth.apiKey,
         headers: auth.headers,
         env: auth.env,
