@@ -66,7 +66,7 @@ const SYSTEM = [
 
 async function call(messages: unknown[], withTools = true, maxTokens = 4096, retries = 3): Promise<{ status: number; body: unknown }> {
   for (let attempt = 0; ; attempt++) {
-    const body: Record<string, unknown> = { model: MODEL, messages, stream: false, max_tokens: maxTokens, temperature: 0.3 }
+    const body: Record<string, unknown> = { model: MODEL, messages, stream: false, max_tokens: maxTokens, temperature: 0.3, reasoning_effort: "low" }
     if (withTools) body.tools = TOOLS
     let res: Response
     try {
@@ -183,7 +183,7 @@ async function main() {
 
     // После 5 раундов чтения — СВЕЖИЙ диалог БЕЗ тулов: влитое содержимое
     // прочитанного + шаблон. Модель без тул-истории может ответить JSON'ом.
-    if (round === 5) {
+    if (round === 1) {
       console.log("\n========== FRESH NO-TOOLS REVIEW CALL ==========")
       const readContents = messages
         .filter((m) => (m as { role?: string }).role === "tool")

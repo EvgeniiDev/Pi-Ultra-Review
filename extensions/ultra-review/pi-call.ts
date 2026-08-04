@@ -69,6 +69,7 @@ export async function chatViaPi(
   tools: Tool[] | undefined,
   signal?: AbortSignal,
   maxTokens?: number,
+  reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
 ): Promise<AgentTurn> {
   const fullModel = model as Model<Api>
   const auth = await registry.getApiKeyAndHeaders(fullModel)
@@ -96,6 +97,7 @@ export async function chatViaPi(
         signal,
         temperature: MODEL_TEMPERATURE,
         maxTokens: maxTokens ?? MODEL_MAX_TOKENS,
+        reasoningEffort,
       }).then((r) => {
         if (r.stopReason === "error" && isRetryable(new Error(r.errorMessage ?? ""))) {
           throw new Error(`${model.provider}/${model.id} error: ${r.errorMessage}`)
@@ -140,7 +142,8 @@ async function fallbackReview(
       [{ role: "user", content: [{ type: "text", text: user }] }],
       undefined, // без тулов
       signal,
-      32_000, // вердикт с находками: модели нужен бюджет на мышление + ответ
+      32_000, // вердикт с находками
+      "low",
     )
     const text = extractText(turn.content)
     // ВРЕМЕННЫЙ дебаг-лог: понять, что реально возвращает free-модель на
@@ -184,7 +187,7 @@ export async function runAgent(
   let toolCalls = 0
   const attempt = async (): Promise<string> => {
     const chat: AgentChat = (messages, toolsList, s) =>
-      chatViaPi(registry, model, prompt, messages, toolsList as Tool[], s)
+      chatViaPi(registry, model, prompt, messages, toolsList as Tool[], s, undefined, "low")
     const loop = await runAgentLoop(chat, initialMessages, tools, executor, {
       maxIterations: opts.maxIterations ?? 8,
       maxToolCalls: opts.maxToolCalls ?? 30,
