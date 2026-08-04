@@ -144,3 +144,25 @@ test("runAgent: tool-spiral loop text triggers fresh no-tools fallback review", 
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// judgeViaPi: свежий no-tools вызов судьи без спирали чтения. Возвращает текст
+// JSON-вердикта; на пусто/тул-разметку повторяет попытку.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("judgeViaPi возвращает JSON-вердикт судьи", async () => {
+  const json = '{"verdicts":[{"idx":1,"verdict":"VALID","duplicate_of":null,"new_severity":null,"rationale":"ok"}],"summary":{"valid":1},"kept":[1]}'
+  completeImpl = async () => ({ stopReason: "end_turn", content: [{ type: "text", text: json }] })
+  const { judgeViaPi } = await import("./pi-call.ts")
+  const out = await judgeViaPi(fakeRegistry as never, fakeModel as never, "judge prompt")
+  expect(out.text).toBe(json)
+  expect(completeCalls).toBe(1)
+})
+
+test("judgeViaPi на тул-разметке повторяет, потом пустой результат", async () => {
+  completeImpl = async () => ({ stopReason: "end_turn", content: [{ type: "text", text: "<invoke name=\"read_file\">..." }] })
+  const { judgeViaPi } = await import("./pi-call.ts")
+  const out = await judgeViaPi(fakeRegistry as never, fakeModel as never, "judge prompt")
+  expect(out.text).toBe("")
+  expect(completeCalls).toBe(2) // 2 попытки, обе тул-разметка
+})

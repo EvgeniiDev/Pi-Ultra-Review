@@ -318,14 +318,43 @@ interface JudgeOutput {
 
 /** Достаёт JSON из ответа судьи: срезает Markdown-обёртки и лишний текст. */
 function parseJudgeJson(text: string): JudgeOutput | null {
+  // Быстрый путь: валидный объект от первого "{" до последнего "}".
   const start = text.indexOf("{")
   const end = text.lastIndexOf("}")
-  if (start < 0 || end <= start) return null
-  try {
-    return JSON.parse(text.slice(start, end + 1)) as JudgeOutput
-  } catch {
-    return null
+  if (start >= 0 && end > start) {
+    try {
+      const direct = JSON.parse(text.slice(start, end + 1)) as JudgeOutput
+      if (Array.isArray(direct?.verdicts)) return direct
+    } catch {
+      // идём в глубокий скан
+    }
   }
+  // Сбалансированные объекты от каждого "{": судья мог вставить текст между
+  // находками или обернуть JSON в рассуждения. Нужен объект с "verdicts".
+  const opens: number[] = []
+  for (let i = text.indexOf("{"); i >= 0; i = text.indexOf("{", i + 1)) opens.push(i)
+  for (let n = opens.length - 1; n >= 0; n--) {
+    let depth = 0
+    const from = opens[n]
+    for (let j = from; j < text.length; j++) {
+      const ch = text[j]
+      if (ch === "{") depth++
+      else if (ch === "}") {
+        depth--
+        if (depth === 0) {
+          const cand = text.slice(from, j + 1)
+          try {
+            const parsed = JSON.parse(cand) as JudgeOutput
+            if (Array.isArray(parsed?.verdicts)) return parsed
+          } catch {
+            // невалидный кандидат — пробуем следующий
+          }
+          break
+        }
+      }
+    }
+  }
+  return null
 }
 
 function judgeVerdict(kept: ValidatedFinding[]): string {

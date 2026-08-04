@@ -173,6 +173,36 @@ async function fallbackReview(
   return null
 }
 
+export async function judgeViaPi(
+  registry: PiRegistryLike,
+  model: PiModelLike,
+  prompt: string,
+  signal?: AbortSignal,
+  attempts = 2,
+): Promise<{ text: string }> {
+  const user = "Emit your JSON verdict now — exactly the schema from the prompt."
+  // Свежий no-tools вызов: у судьи нет тулов, спираль невозможна, мышление low.
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const turn = await chatViaPi(
+        registry,
+        model,
+        prompt,
+        [{ role: "user", content: [{ type: "text", text: user }], timestamp: Date.now() }],
+        undefined, // без тулов
+        signal,
+        32_000, // verdicts[] может быть большим при множестве находок
+        "low",
+      )
+      const text = extractText(turn.content)
+      if (text && !isToolMarkup(text)) return { text }
+    } catch (e) {
+      if (signal?.aborted) throw e
+    }
+  }
+  return { text: "" }
+}
+
 /**
  * Полный агентный прогон ревью: модель сама читает файлы из репозитория
  * (root) через read_file и выносит вердикт. Пустой итог ретраится.
