@@ -60,7 +60,7 @@ function assertProtocol(messages: Msg[]) {
 
 const executor: AgentExecutor = async () => ({ ok: true, text: "file contents (mock)" })
 
-test("budget exhaustion responds to every real tool_call, not fake 'limit'", async () => {
+test("budget exhaustion responds to every real tool_call, then the model answers", async () => {
   let calls = 0
   const chat = async (messages: unknown[], _tools: unknown[]) => {
     assertProtocol(messages as Msg[])
@@ -72,17 +72,11 @@ test("budget exhaustion responds to every real tool_call, not fake 'limit'", asy
         stopReason: "toolCalls",
       }
     }
-    if (calls === 2) {
-      // Модель снова просит тулы на фоне исчерпанного бюджета (maxToolCalls=1).
-      return {
-        assistantMessage: assistantMsg([{ id: "call_3" }, { id: "call_4" }]),
-        content: [toolCall("call_3"), toolCall("call_4")],
-        stopReason: "toolCalls",
-      }
-    }
+    // maxToolCalls=1: после исчерпания бюджета тулы убраны — модель отвечает.
+    const content = [{ type: "text", text: "final" }]
     return {
-      assistantMessage: { role: "assistant", content: [{ type: "text", text: "final" }] },
-      content: [{ type: "text", text: "final" }],
+      assistantMessage: { role: "assistant", content },
+      content,
       stopReason: "end",
     }
   }
@@ -95,27 +89,22 @@ test("budget exhaustion responds to every real tool_call, not fake 'limit'", asy
     undefined,
   )
   expect(res.text).toBe("final")
-  expect(calls).toBe(3)
+  expect(calls).toBe(2)
 })
 
-test("isLast branch responds to each real tool_call before the nudging final", async () => {
+test("isLast branch answers each real tool_call and preserves the turn's text", async () => {
   let calls = 0
   const chat = async (messages: unknown[], _tools: unknown[]) => {
     assertProtocol(messages as Msg[])
     calls++
-    if (calls === 1) {
-      // maxIterations=1 → isLast сразу; модель всё равно запрашивает тулы.
-      return {
-        assistantMessage: assistantMsg([{ id: "call_1" }, { id: "call_2" }, { id: "call_3" }]),
-        content: [toolCall("call_1"), toolCall("call_2"), toolCall("call_3")],
-        stopReason: "toolCalls",
-      }
-    }
-    return {
-      assistantMessage: { role: "assistant", content: [{ type: "text", text: "verdict" }] },
-      content: [{ type: "text", text: "verdict" }],
-      stopReason: "end",
-    }
+    // maxIterations=1 → isLast сразу; модель всё равно просит тулы и пишет текст.
+    const content = [
+      toolCall("call_1"),
+      toolCall("call_2"),
+      toolCall("call_3"),
+      { type: "text", text: "verdict" },
+    ]
+    return { assistantMessage: { role: "assistant", content }, content, stopReason: "toolCalls" }
   }
   const res = await runAgentLoop(
     chat as never,
@@ -125,8 +114,10 @@ test("isLast branch responds to each real tool_call before the nudging final", a
     { maxIterations: 1, maxToolCalls: 10 },
     undefined,
   )
+  // isLast-ветка ответила всем трём тулам (assertProtocol в chat это проверил)
+  // и сохранила текст хода — без отдельного nudging-вызова.
   expect(res.text).toBe("verdict")
-  expect(calls).toBe(2)
+  expect(calls).toBe(1)
 })
 
 test("no tool calls → single chat round, no protocol concerns", async () => {
@@ -152,103 +143,23 @@ test("no tool calls → single chat round, no protocol concerns", async () => {
   expect(calls).toBe(1)
 })
 
-// Модель прислала тул ТЕКСТОМ (релей не отдал структуру) — extractToolCalls
-// должен распознать <invoke> и исполнить через makeExecutor, потом получить вердикт.
-test("textual <invoke> tool call is parsed and executed, then verdict", async () => {
+test("structured read_file calls are executed, then the verdict text is returned", async () => {
   let calls = 0
   const executed: Array<{ name: string; args: Record<string, unknown> }> = []
   const chat = async (messages: unknown[], _tools: unknown[]) => {
     assertProtocol(messages as Msg[])
     calls++
     if (calls === 1) {
-      const text =
-        '<|tool_calls|>\n<invoke name="read_file">\n<parameter name="path" string="true">src/a.ts</parameter>\n<parameter name="startLine" value="1"/>\n</invoke>'
-      return {
-        assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
-        content: [{ type: "text", text }],
-        stopReason: "text",
-      }
+      const content = [
+        toolCall("call_1", "read_file", { path: "src/a.ts" }),
+        { type: "text", text: "reading…" },
+      ]
+      return { assistantMessage: { role: "assistant", content }, content, stopReason: "toolCalls" }
     }
+    const text = '{"context":"FULL","findings":[{"severity":"HIGH","file":"src/a.ts","line":2,"title":"t"}]}'
     return {
-      assistantMessage: { role: "assistant", content: [{ type: "text", text: '{"context":"FULL","findings":[]}' }] },
-      content: [{ type: "text", text: '{"context":"FULL","findings":[]}' }],
-      stopReason: "end",
-    }
-  }
-  const localExecutor: AgentExecutor = async (call) => {
-    executed.push({ name: call.name ?? "", args: (call.arguments as Record<string, unknown>) ?? {} })
-    return { ok: true, text: "contents of src/a.ts" }
-  }
-  const res = await runAgentLoop(
-    chat as never,
-    [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
-    [],
-    localExecutor,
-    { maxIterations: 5, maxToolCalls: 10 },
-    undefined,
-  )
-  expect(executed).toHaveLength(1)
-  expect(executed[0].name).toBe("read_file")
-  expect(executed[0].args).toEqual({ path: "src/a.ts", startLine: "1" })
-  expect(res.text).toBe('{"context":"FULL","findings":[]}')
-  expect(calls).toBe(2)
-})
-
-test("textual tool calls to the last iteration trigger a final no-tools verdict nudge", async () => {
-  let calls = 0
-  const chat = async (messages: unknown[], _tools: unknown[]) => {
-    assertProtocol(messages as Msg[])
-    // Проверяем: финальный нодж должен прийти БЕЗ тулов и требовать вердикт.
-    const lastUser = [...messages].reverse().find((m) => (m as Msg).role === "user")
-    const askedVerdict = JSON.stringify(lastUser?.content ?? "").includes("verdict JSON")
-    calls++
-    if (calls === 1) {
-      // До isLast модель печатает текстовый тул (релей не отдаёт структуру).
-      const text =
-        '<tool_calls>\n<invoke name="read_file">\n<parameter name="path" string="true">src/a.ts</parameter>\n</invoke>\n</tool_calls>'
-      return {
-        assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
-        content: [{ type: "text", text }],
-        stopReason: "text",
-      }
-    }
-    return {
-      assistantMessage: { role: "assistant", content: [{ type: "text", text: '{"context":"FULL","findings":[]}' }] },
-      content: [{ type: "text", text: '{"context":"FULL","findings":[]}' }],
-      stopReason: "end",
-    }
-  }
-  const res = await runAgentLoop(
-    chat as never,
-    [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
-    [],
-    executor,
-    { maxIterations: 1, maxToolCalls: 10 }, // isLast сразу → после break нодж
-    undefined,
-  )
-  expect(res.text).toBe('{"context":"FULL","findings":[]}')
-  expect(calls).toBe(2) // 1 (тул-текст) + финальный нодж
-})
-
-test("DSML fullwidth <｜DSML｜invoke> tool call is normalized, parsed and executed", async () => {
-  let calls = 0
-  const executed: Array<{ name: string; args: Record<string, unknown> }> = []
-  const chat = async (messages: unknown[], _tools: unknown[]) => {
-    assertProtocol(messages as Msg[])
-    calls++
-    if (calls === 1) {
-      // Полная ширина (U+FF5C ｜, U+FF1C ＜, U+FF1E ＞) + DSML-префиксы.
-      const text =
-        '＜｜DSML｜tool_calls＞\n＜｜DSML｜invoke name="read_file"＞\n＜｜DSML｜parameter name="path" string="true"＞src/a.ts＜／｜DSML｜parameter＞\n＜／｜DSML｜invoke＞\n＜／｜DSML｜tool_calls＞'
-      return {
-        assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
-        content: [{ type: "text", text }],
-        stopReason: "text",
-      }
-    }
-    return {
-      assistantMessage: { role: "assistant", content: [{ type: "text", text: '{"context":"FULL","findings":[]}' }] },
-      content: [{ type: "text", text: '{"context":"FULL","findings":[]}' }],
+      assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
+      content: [{ type: "text", text }],
       stopReason: "end",
     }
   }
@@ -267,131 +178,35 @@ test("DSML fullwidth <｜DSML｜invoke> tool call is normalized, parsed and exec
   expect(executed).toHaveLength(1)
   expect(executed[0].name).toBe("read_file")
   expect(executed[0].args).toEqual({ path: "src/a.ts" })
-  expect(res.text).toBe('{"context":"FULL","findings":[]}')
+  expect(res.text).toContain('"context":"FULL"')
   expect(calls).toBe(2)
 })
 
-test("textual <invoke submit_review> verdict is extracted and returned without executing read tools", async () => {
-  let calls = 0
-  let executed = 0
-  const chat = async (messages: unknown[], _tools: unknown[]) => {
-    assertProtocol(messages as Msg[])
-    calls++
-    const text =
-      '<tool_calls>\n<invoke name="submit_review">\n<parameter name="verdict" string="true">{"context":"FULL","findings":[{"severity":"high","file":"src/a.ts","line":3,"title":"t","description":"d","evidence":"e"}]}</parameter>\n</invoke>\n</tool_calls>'
-    return {
-      assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
-      content: [{ type: "text", text }],
-      stopReason: "text",
-    }
-  }
-  const res = await runAgentLoop(
-    chat as never,
-    [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
-    [],
-    async () => { executed++; return { ok: true, text: "x" } },
-    { maxIterations: 5, maxToolCalls: 10 },
-    undefined,
-  )
-  expect(executed).toBe(0)
-  expect(res.text).toBe('{"context":"FULL","findings":[{"severity":"high","file":"src/a.ts","line":3,"title":"t","description":"d","evidence":"e"}]}')
-  expect(calls).toBe(1)
-})
-
-test("structured submit_review with object verdict is JSON-stringified", async () => {
-  const verdictObj = { context: "FULL", findings: [] }
-  const chat = async (messages: unknown[], _tools: unknown[]) => {
-    assertProtocol(messages as Msg[])
-    const content = [{ type: "toolCall" as const, id: "call-1", name: "submit_review", arguments: { verdict: verdictObj } }]
-    return {
-      assistantMessage: { role: "assistant", content },
-      content,
-      stopReason: "toolUse",
-    }
-  }
-  const res = await runAgentLoop(
-    chat as never,
-    [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
-    [],
-    async () => ({ ok: true, text: "x" }),
-    { maxIterations: 5, maxToolCalls: 10 },
-    undefined,
-  )
-  expect(res.text).toBe(JSON.stringify(verdictObj))
-})
-
-test("JSON verdict written in prose mid-loop survives: accumulated texts returned when final is tool markup", async () => {
+test("prose verdict written alongside tool calls survives: text is tracked across turns", async () => {
   let calls = 0
   const chat = async (messages: unknown[], _tools: unknown[]) => {
     assertProtocol(messages as Msg[])
     calls++
     if (calls === 1) {
-      const text = '<tool_calls>\n<invoke name="read_file">\n<parameter name="path">src/a.ts</parameter>\n</invoke>\n</tool_calls>'
-      return {
-        assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
-        content: [{ type: "text", text }],
-        stopReason: "text",
-      }
+      const content = [
+        toolCall("call_1", "read_file", { path: "src/a.ts" }),
+        { type: "text", text: '{"context":"FULL","findings":[]}' },
+      ]
+      return { assistantMessage: { role: "assistant", content }, content, stopReason: "toolCalls" }
     }
-    if (calls === 2) {
-      // Модель написала вердикт ПРОЗОЙ и тут же снова попросила тул.
-      const text =
-        '{"context":"FULL","findings":[{"severity":"medium","file":"src/a.ts","line":5,"title":"t","description":"d","evidence":"e"}]}\n<tool_calls>\n<invoke name="read_file">\n<parameter name="path">src/b.ts</parameter>\n</invoke>\n</tool_calls>'
-      return {
-        assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
-        content: [{ type: "text", text }],
-        stopReason: "text",
-      }
-    }
-    // Нодж и все последующие — снова тул-разметка (модель зациклилась).
-    const text = '<tool_calls>\n<invoke name="read_file">\n<parameter name="path">src/c.ts</parameter>\n</invoke>\n</tool_calls>'
-    return {
-      assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
-      content: [{ type: "text", text }],
-      stopReason: "text",
-    }
+    // Модель зациклилась: на isLast-итерации снова просит тул (их уже нет).
+    const content = [toolCall("call_2", "read_file", { path: "src/b.ts" })]
+    return { assistantMessage: { role: "assistant", content }, content, stopReason: "toolCalls" }
   }
   const res = await runAgentLoop(
     chat as never,
     [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
     [],
     async () => ({ ok: true, text: "contents" }),
-    { maxIterations: 2, maxToolCalls: 30 }, // 2 итерации + нодж (calls 1,2,3)
+    { maxIterations: 2, maxToolCalls: 30 },
     undefined,
   )
+  // isLast-ветка отвечает call_2, break — вердикт из первой итерации сохранён.
   expect(res.text).toContain('"context":"FULL"')
-  expect(res.text).toContain("src/a.ts")
-})
-
-test("second fill-in-template nudge pulls a verdict when the first nudge re-emits tool markup", async () => {
-  let calls = 0
-  const toolBlock = '<tool_calls>\n<invoke name="read_file">\n<parameter name="path">src/a.ts</parameter>\n</invoke>\n</tool_calls>'
-  const chat = async (messages: unknown[], _tools: unknown[]) => {
-    assertProtocol(messages as Msg[])
-    calls++
-    if (calls === 3) {
-      // Ответ на второй нодж (шаблон-заполнялка): модель выдаёт вердикт-форму.
-      const text = '{"context":"FULL","findings":[{"severity":"low","category":"c","file":"src/a.ts","line":1,"lineEnd":null,"title":"t","description":"d","evidence":"e"}]}'
-      return {
-        assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
-        content: [{ type: "text", text }],
-        stopReason: "text",
-      }
-    }
-    return {
-      assistantMessage: { role: "assistant", content: [{ type: "text", text: toolBlock }] },
-      content: [{ type: "text", text: toolBlock }],
-      stopReason: "text",
-    }
-  }
-  const res = await runAgentLoop(
-    chat as never,
-    [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
-    [],
-    async () => ({ ok: true, text: "contents" }),
-    { maxIterations: 1, maxToolCalls: 10 }, // 1 итерация + 2 ноджа (calls 1,2,3)
-    undefined,
-  )
-  expect(res.text).toBe('{"context":"FULL","findings":[{"severity":"low","category":"c","file":"src/a.ts","line":1,"lineEnd":null,"title":"t","description":"d","evidence":"e"}]}')
-  expect(calls).toBe(3)
+  expect(calls).toBe(2)
 })

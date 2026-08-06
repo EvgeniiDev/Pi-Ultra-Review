@@ -28,7 +28,7 @@ const SNIPPET_LEN = 120
  * - путь обязан остаться внутри root (.. и абсолютные пути блокируются);
  * - заблокированы служебные каталоги (.git, node_modules, .pi, reviews, ...);
  * - бинарники и файлы > 100 КБ не читаются;
- * - по умолчанию возвращаются первые 300 строк с номерами + подсказка о чанках.
+ * - по умолчанию возвращаются первые 500 строк с номерами + подсказка о чанках.
  */
 export async function readFileSafely(root: string, path: string, startLine?: number, endLine?: number): Promise<ReadResult> {
   // Симлинк-защита: resolve()/relative() — лексика, а stat/readFile идут по
@@ -212,6 +212,7 @@ export async function searchFilesSafely(root: string, query: string, pathFilter?
 /**
  * Диспетчер тулов агента: read_file (с записью прочитанных путей для
  * валидации находок) и search_files (только для simplify-спека).
+ * Неизвестный тул — явная ошибка, а не тихий read_file с пустым путём.
  */
 export function makeExecutor(root: string, readFiles: Set<string>): AgentExecutor {
   return async (call) => {
@@ -222,9 +223,17 @@ export function makeExecutor(root: string, readFiles: Set<string>): AgentExecuto
       const path = args.path === undefined ? undefined : String(args.path)
       return searchFilesSafely(root, query, path)
     }
+    if (name !== "read_file") {
+      return { ok: false, error: `unknown tool: ${name || "(empty)"}` }
+    }
     const path = String(args.path ?? "")
-    if (path) readFiles.add(path)
-    return readFileSafely(root, path, args.startLine as number | undefined, args.endLine as number | undefined)
+    const res = await readFileSafely(root, path, args.startLine as number | undefined, args.endLine as number | undefined)
+    // В readFiles — только УСПЕШНО прочитанные пути: processTaskOutput по этому
+    // сэту пропускает находки («файл прочитан — контент видели»). Раньше путь
+    // добавлялся ДО чтения, и галлюцинация на .git/config или node_modules/x
+    // (чтение упало, контента модель не видела) проходила серверную валидацию.
+    if (res.ok && path) readFiles.add(path)
+    return res
   }
 }
 
@@ -247,8 +256,6 @@ export interface AgentLoopResult {
   text: string
   iterations: number
   toolCalls: number
-  /** Реальные результаты чтений (контент toolResult), собранные за цикл. */
-  readResults: string[]
 }
 
 export function extractText(content: unknown[]): string {
@@ -259,86 +266,25 @@ export function extractText(content: unknown[]): string {
     .trim()
 }
 
-// Иногда (free-тир через релей) модель не возвращает тулы структурно — она
-// печатает их ТЕКСТОМ: Anthropic-нотация `<invoke name="read_file">` или
-// DSML `<|DSML|invoke name=...>`, причём с ПОЛНОЙ шириной символов (U+FF5C
-// ｜, U+FF1C ＜, U+FF1E ＞). extractToolCalls их не видел, цикл завершался без
-// чтения и без вердикта → "malformed". Нормализуем и исполняем.
-let textToolCallId = 0
-
-export function normalizeToolMarkup(text: string): string {
-  return text
-    .replace(/[\uFF5C\uFF5F]/g, "|")
-    .replace(/[\uFF0F]/g, "/")
-    .replace(/[\uFF1C]/g, "<")
-    .replace(/[\uFF1E]/g, ">")
-    .replace(/<\|DSML\|/g, "<")
-    .replace(/<\/\|DSML\|/g, "</")
-}
-
-/** Текст — это всё ещё тул-разметка (read_file/submit_review и т.п.), а не ответ. */
-export function isToolMarkup(text: string): boolean {
-  const n = normalizeToolMarkup(text)
-  return /<invoke\s/i.test(n) || /<tool_calls>/i.test(n) || /<antml>/i.test(n) || /<|DSML/i.test(n)
-}
-
-function parseInvokeToolCalls(text: string): AgentToolCall[] {
-  const out: AgentToolCall[] = []
-  const normalized = normalizeToolMarkup(text)
-  const invokeRe = /<invoke\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/invoke>/gi
-  for (const m of normalized.matchAll(invokeRe)) {
-    const name = m[1]
-    const body = m[2]
-    const args: Record<string, unknown> = {}
-    // Модель пишет параметры двумя способами, с любыми доп. атрибутами:
-    //   <parameter name="path" string="true">.swarm/x</parameter>  — вложенный
-    //   <parameter name="startLine" value="1"/>                 — атрибут
-    const paramRe = /<parameter\s+name="([^"]+)"\s*([^>]*)>/gi
-    for (const mm of body.matchAll(paramRe)) {
-      const pname = mm[1]
-      const attrs = mm[2]
-      const valAttr = /value="([^"]*)"/.exec(attrs)
-      if (valAttr) {
-        args[pname] = valAttr[1]
-        continue
-      }
-      const rest = body.slice(mm.index + mm[0].length)
-      const endM = /<\/parameter\s*>/i.exec(rest)
-      if (endM) args[pname] = rest.slice(0, endM.index).trim()
-    }
-    out.push({ id: `text-${++textToolCallId}`, name, arguments: args })
-  }
-  return out
-}
-
+/** Структурные тул-вызовы из ответа модели (полноценные провайдеры их нормализуют). */
 export function extractToolCalls(content: unknown[]): AgentToolCall[] {
-  const structured = content.filter((e): e is AgentToolCall => {
+  return content.filter((e): e is AgentToolCall => {
     if (typeof e !== "object" || e === null) return false
     const c = e as { type?: unknown; name?: unknown; arguments?: unknown }
     return c.type === "toolCall" || (typeof c.name === "string" && typeof c.arguments === "object" && c.arguments !== null)
   })
-  // Структурные тулы предпочтительнее; только если их нет — ищем текстовые
-  // <invoke> в текстовых блоках (релей не отдал тулы структурно).
-  if (structured.length > 0) return structured
-  const textual: AgentToolCall[] = []
-  for (const e of content) {
-    if (typeof e !== "object" || e === null) continue
-    const t = (e as { text?: unknown }).text
-    if (typeof t === "string") textual.push(...parseInvokeToolCalls(t))
-  }
-  return textual
 }
 
 /**
  * Многошаговый диалог с моделью:
  * - вызывает chat, пока модель не перестанет запрашивать тулы;
- * - исполняет запросы read_file (параллельно) и возвращает результаты модели;
+ * - исполняет запросы read_file/search_files (параллельно) и возвращает
+ *   результаты модели;
  * - жёстко ограничен: maxIterations итераций, maxToolCalls чтений,
  *   maxContextChars накопленного контекста;
- * - на последней итерации тулы убираются (модель обязана ответить), если
- *   финальный текст пуст — один nudging-вызов вместо рестарта всего цикла.
- * Рестарт всего цикла на пустом ответе — главная причина "очень длинных"
- * прогонов: каждая попытка заново читает все файлы.
+ * - на последней итерации тулы убираются (модель обязана ответить); пустой
+ *   финальный текст ловит retryOnEmpty (повтор всего цикла — редкий случай
+ *   для капабельной модели).
  */
 export async function runAgentLoop(
   chat: AgentChat,
@@ -356,12 +302,6 @@ export async function runAgentLoop(
   let contextChars = 0
   let forceFinish = false
   let text = ""
-  // Все текстовые ответы модели за итерации: если финал — тул-разметка, а
-  // JSON-вердикт модель успела написать прозой в одной из ранних итераций,
-  // движок найдёт его в накопленном тексте (jsonCandidates сканирует всё).
-  const allTexts: string[] = []
-  // Содержимое прочитанных файлов (для свежего no-tools ревью-фолбэка).
-  const readResults: string[] = []
 
   for (let iteration = 0; iteration < maxIterations; iteration++) {
     // Последняя итерация (или исчерпанный бюджет) — без тулов: модель обязана ответить.
@@ -369,33 +309,15 @@ export async function runAgentLoop(
     const turn = await chat(messages, isLast ? [] : tools, signal)
     const calls = extractToolCalls(turn.content)
     const textPart = extractText(turn.content)
-    if (textPart) {
-      text = textPart
-      allTexts.push(textPart)
-    }
-
-    // Вердикт через submit_review: свободная модель охотно вызывает тулы и не
-    // пишет JSON прозой — принимаем вердикт из аргумента тула (структурного
-    // или текстового <invoke>/DSML). Срабатывает на любой итерации.
-    const submitted = calls.find((c) => c.name === "submit_review")
-    if (submitted) {
-      const v = submitted.arguments?.verdict
-      const verdict =
-        typeof v === "string"
-          ? v.trim()
-          : typeof v === "object" && v !== null
-            ? JSON.stringify(v)
-            : ""
-      if (verdict) return { text: verdict, iterations: iteration + 1, toolCalls, readResults }
-    }
+    if (textPart) text = textPart
 
     if (calls.length === 0) {
-      return { text: textPart || text, iterations: iteration + 1, toolCalls, readResults }
+      return { text: textPart || text, iterations: iteration + 1, toolCalls }
     }
     if (isLast) {
-      // Модель всё ещё просит тулы, хотя их больше нет — уходим к nudging-финалу.
-      // Отвечаем КАЖДОМУ реальному tool_call: апстрим валидирует, что у каждого
-      // assistant tool_call есть tool-ответ (фейковый id "limit" это ломает).
+      // Модель всё ещё просит тулы, хотя их больше нет — отвечаем КАЖДОМУ
+      // реальному tool_call (апстрим валидирует, что у каждого assistant
+      // tool_call есть tool-ответ с тем же id) и выходим с накопленным текстом.
       messages.push(turn.assistantMessage)
       for (const c of calls) {
         messages.push({
@@ -433,7 +355,6 @@ export async function runAgentLoop(
     for (const { c, res } of results) {
       const payload = res.ok ? res.text : `ERROR: ${res.error}`
       contextChars += payload.length
-      readResults.push(payload)
       messages.push({
         role: "toolResult",
         toolCallId: c.id ?? "tool",
@@ -445,45 +366,5 @@ export async function runAgentLoop(
     }
   }
 
-  // Финальный nudging-вызов без тулов. Раньше срабатывал только на ПУСТОМ тексте
-  // ("without restartsing loop") — но когда модель на isLast-итерации печатала
-  // тул-вызов ТЕКСТОМ (релей не отдаёт структуру), break оставлял текст-
-  // тул в качестве результата, вердикт-запрос модель НИКОГДА не получала →
-  // malformed. Теперь нодж идёт и если финальный текст — это всё ещё тул-блок.
-  const extractSubmitVerdict = (content: unknown[]): string => {
-    const submit = extractToolCalls(content).find((c) => c.name === "submit_review")
-    if (!submit) return ""
-    const v = submit.arguments?.verdict
-    return typeof v === "string"
-      ? v.trim()
-      : typeof v === "object" && v !== null
-        ? JSON.stringify(v)
-        : ""
-  }
-  // До двух nudging-вызовов: первый предлагает submit_review-разметку, второй —
-  // готовый JSON-шаблон (free-модель зацикливается на read_file; шаблон ломает
-  // цикл). Если всё равно тул-разметка — отдаём накопленный текст.
-  const nudgeMessages = [
-    !text.trim()
-      ? "Output your final verdict JSON now based on what you have read. If you prefer, emit it as: <invoke name=\"submit_review\"><parameter name=\"verdict\" string=\"true\">{\"context\":\"FULL\",\"findings\":[]}</parameter></invoke>"
-      : "Tool calls are no longer available. Submit the final review verdict NOW, either as the JSON directly, or (if you must) as: <invoke name=\"submit_review\"><parameter name=\"verdict\" string=\"true\">{\"context\":\"FULL\",\"findings\":[]}</parameter></invoke>",
-    "Do NOT call read_file again — reading is complete. Fill in and output ONLY this JSON template (valid JSON, real values): {\"context\":\"FULL\",\"findings\":[{\"severity\":\"low|medium|high|critical\",\"category\":\"...\",\"file\":\"...\",\"line\":1,\"lineEnd\":null,\"title\":\"...\",\"description\":\"...\",\"evidence\":\"...\"}]}",
-  ]
-  for (let n = 0; n < nudgeMessages.length && (!text.trim() || isToolMarkup(text)); n++) {
-    const nudge = await chat(
-      [...messages, { role: "user", content: [{ type: "text", text: nudgeMessages[n] }], timestamp: Date.now() }],
-      [],
-      signal,
-    )
-    text = extractText(nudge.content)
-    const verdict = extractSubmitVerdict(nudge.content)
-    if (verdict) {
-      text = verdict
-      break
-    }
-  }
-  // Всё ещё тул-разметка? Отдаём весь накопленный текст — если JSON-вердикт
-  // был написан прозой в одной из итераций, движок его найдёт.
-  if (isToolMarkup(text)) text = allTexts.join("\n\n")
-  return { text, iterations: maxIterations, toolCalls, readResults }
+  return { text, iterations: maxIterations, toolCalls }
 }

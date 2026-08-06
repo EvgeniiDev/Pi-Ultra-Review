@@ -3,20 +3,28 @@ import type { Severity, SpecId } from "./types.ts"
 export const MAX_DIFF_CHARS = 20_000
 
 /** Версия промтов для отладки/evals: меняй при каждом изменении контракта. */
-export const PROMPT_VERSION = "2026-08-03.json"
+export const PROMPT_VERSION = "2026-08-07.json"
 
 // Параллельность ревью: не больше PROVIDER_MAX_CONCURRENCY одновременных
 // запросов к одному провайдеру и не больше GLOBAL_MAX_CONCURRENCY всего,
 // чтобы не долбить провайдера кучей запросов (rate-limit, socket exhaustion).
-// 1 на провайдера: zen-relay free-тир рвёт стримы под параллельной нагрузкой —
-// последовательные запросы заметно стабильнее (платные модели тоже переживут).
-export const PROVIDER_MAX_CONCURRENCY = 1
+// 1 на провайдера было под zen-relay free-тир (рвал стримы под нагрузкой);
+// для полноценных провайдеров (opencode-go и т.п.) 4 — безопасный дефолт.
+export const PROVIDER_MAX_CONCURRENCY = 4
 export const GLOBAL_MAX_CONCURRENCY = 10
 
 // Параметры вызова модели.
 // temperature 0.3, а не 0: при 0 DeepSeek-класс модели заметно деградирует.
 export const MODEL_TEMPERATURE = 0.3
-export const MODEL_MAX_TOKENS = 16384
+// 64K output-токенов: под max reasoning (REASONING_EFFORT) модель тратит
+// бюджет на мышление — 32K могло обрезать длинную цепочку рассуждений.
+// deepseek-v4-flash поддерживает до 384K, запас безопасен.
+export const MODEL_MAX_TOKENS = 65536
+
+// Уровень reasoning для платных/капабельных моделей. Free-модели (релей)
+// получают "low" всегда — на max они сжигают бюджет на бесконечное мышление
+// и возвращают пустой ответ (см. reasoningEffortFor в types.ts).
+export const REASONING_EFFORT = "max"
 
 // Ретрай пустого ответа модели (иногда это временный затуп),
 // задержка растёт линейно: delay, delay*2, ...
@@ -37,8 +45,8 @@ export const SPECIALIZATIONS: Record<SpecId, string> = {
   simplify: "Simplify (reuse, dead code, thin wrappers, cleanup)",
 }
 
-// Платные модели, которые всегда показываем в мастере помимо бесплатных.
+// Модели, которые всегда показываем в мастере помимо бесплатных.
 // Формат: "provider/modelId" из каталога pi.
 export const EXTRA_MODELS = [
-  "openrouter/deepseek/deepseek-v4-flash",
+  "opencode-go/deepseek-v4-flash",
 ]

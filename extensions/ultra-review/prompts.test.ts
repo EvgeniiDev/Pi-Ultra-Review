@@ -17,3 +17,20 @@ test("security prompt does not mention search_files or simplify fields", () => {
   expect(p).not.toContain("reuseTarget")
   expect(p).not.toContain('risk: "safe"')
 })
+
+test("prompt no longer instructs submit_review — verdict is plain JSON output", () => {
+  for (const spec of ["security", "simplify"] as const) {
+    const p = buildPrompt(scope, spec)
+    expect(p).not.toContain("submit_review")
+    expect(p).toContain("Return only a single valid JSON object")
+  }
+})
+
+test("simplify prompt documents two tools (read_file + search_files)", () => {
+  const p = buildPrompt(scope, "simplify")
+  expect(p).toContain("You have two tools:")
+  expect(p).toContain("search_files(query, path?)")
+  const s = buildPrompt(scope, "security")
+  expect(s).toContain("You have one tool:")
+  expect(s).not.toContain("You have two tools:")
+})

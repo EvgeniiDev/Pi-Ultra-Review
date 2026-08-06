@@ -1,5 +1,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
+import { REASONING_EFFORT } from "./constants.ts"
 
 export const SPEC_IDS = [
   "security",
@@ -97,6 +98,15 @@ export type PiRegistryLike = ModelRegistry
 export type PiAuthResult = Awaited<ReturnType<ModelRegistry["getApiKeyAndHeaders"]>>
 
 export const isFreeModel = (m: PiModelLike): boolean => m.cost.input === 0 && m.cost.output === 0
+
+/**
+ * Уровень reasoning для конкретной модели: free (релей/бесплатный тир)
+ * всегда "low" — на max они сжигают бюджет на мышление и возвращают пусто;
+ * платные/капабельные (deepseek-v4-flash и т.п.) получают REASONING_EFFORT.
+ */
+export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+
+export const reasoningEffortFor = (m: PiModelLike): ReasoningEffort => (isFreeModel(m) ? "low" : REASONING_EFFORT)
 
 /** "provider/modelId" — композитный ключ, который видит пользователь. */
 export const modelKey = (m: PiModelLike): string => `${m.provider}/${m.id}`

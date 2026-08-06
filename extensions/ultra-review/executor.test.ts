@@ -25,8 +25,36 @@ beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), "ur-exec-"))
   mkdirSync(join(root, "src"), { recursive: true })
   writeFileSync(join(root, "src", "a.ts"), "const needle = 1\n")
+  mkdirSync(join(root, "node_modules", "pkg"), { recursive: true })
+  writeFileSync(join(root, "node_modules", "pkg", "x.js"), "const blocked = 1\n")
 })
 afterAll(() => rmSync(root, { recursive: true, force: true }))
+
+test("makeExecutor records only successful reads in readFiles", async () => {
+  const readFiles = new Set<string>()
+  const exec = makeExecutor(root, readFiles)
+  // Заблокированный каталог: чтение падает, путь НЕ должен попасть в readFiles —
+  // иначе галлюцинация на .git/config или node_modules/x пройдёт серверную
+  // валидацию находок (файл считается «прочитанным», хотя контента модель не видела).
+  const blocked = await exec({ name: "read_file", arguments: { path: "node_modules/pkg/x.js" } })
+  expect(blocked.ok).toBe(false)
+  expect(readFiles.has("node_modules/pkg/x.js")).toBe(false)
+  const missing = await exec({ name: "read_file", arguments: { path: "nope.ts" } })
+  expect(missing.ok).toBe(false)
+  expect(readFiles.has("nope.ts")).toBe(false)
+  const ok = await exec({ name: "read_file", arguments: { path: "src/a.ts" } })
+  expect(ok.ok).toBe(true)
+  expect(readFiles.has("src/a.ts")).toBe(true)
+})
+
+test("makeExecutor rejects unknown tools explicitly", async () => {
+  const readFiles = new Set<string>()
+  const exec = makeExecutor(root, readFiles)
+  const res = await exec({ name: "submit_review", arguments: { verdict: "x" } })
+  expect(res.ok).toBe(false)
+  expect((res as { ok: false; error: string }).error).toMatch(/unknown tool/)
+  expect(readFiles.size).toBe(0)
+})
 
 test("makeExecutor dispatches read_file and search_files by name", async () => {
   const readFiles = new Set<string>()

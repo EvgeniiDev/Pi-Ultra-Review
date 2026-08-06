@@ -476,15 +476,13 @@ ${diffSection}
 # READING FILES
 
 ${specId === "simplify"
-  ? `You have three tools:
+  ? `You have two tools:
 
 - read_file(path, startLine?, endLine?) — read files in chunks. Returns the requested lines with numbers and the file's total line count.
-- search_files(query, path?) — find existing helpers, duplicates, or similar code anywhere in the repository. Use it BEFORE flagging reuse or duplication, then read the candidates with read_file to confirm.
-- submit_review(verdict) — call this to finish: pass the COMPLETE final review JSON object as the verdict argument.`
-  : `You have two tools:
+- search_files(query, path?) — find existing helpers, duplicates, or similar code anywhere in the repository. Use it BEFORE flagging reuse or duplication, then read the candidates with read_file to confirm.`
+  : `You have one tool:
 
-- read_file(path, startLine?, endLine?) — read files in chunks. Returns the requested lines with numbers and the file's total line count.
-- submit_review(verdict) — call this to finish: pass the COMPLETE final review JSON object as the verdict argument.`}
+- read_file(path, startLine?, endLine?) — read files in chunks. Returns the requested lines with numbers and the file's total line count.`}
 
 - Read the files under review as needed. Do not guess about code you have not
   read.
@@ -494,15 +492,10 @@ ${specId === "simplify"
   when one is provided).
 - You may also read supporting files outside the review list when needed to
   understand the change.
-- When you are confident about the findings, call submit_review with the
-  complete verdict JSON in the verdict argument — NEVER write the JSON in
-  prose; the review is not finished until submit_review is called.
-- To submit, emit a tool call exactly like this:
-  <invoke name="submit_review"><parameter name="verdict" string="true">{"context":"FULL","findings":[]}</parameter></invoke>
-  The verdict argument is the COMPLETE review JSON object described in the
-  output contract below.
+- When you are done reading, output the verdict JSON directly as text — do
+  not call any tool to submit it.
 - You cannot read every file in a large repository. Read a representative
-  sample (a few of the most relevant files), then submit.
+  sample (a few of the most relevant files), then output the verdict.
 
 # TRUST BOUNDARY
 
@@ -713,24 +706,8 @@ export interface JudgeFindingInput {
 }
 
 /**
- * Промпт для СВЕЖЕГО no-tools ревью-фолбэка: агентный цикл прочитал файлы,
- * но модель так и не выдала вердикт (тул-спираль). Отдаём ей эксцерпты
- * напрямую, БЕЗ тулов и БЕЗ тул-истории — модель отвечает JSON'ом.
+ * Промпт судьи: валидирует/дедуплицирует находки панели. Вывод — строго JSON.
  */
-export function buildFallbackReviewPrompt(): string {
-  return [
-    "You are a senior code reviewer. Below you will receive file excerpts from a repository (numbered lines, file name and line count on each block).",
-    "Produce a review verdict as a SINGLE JSON object, nothing else — no tool calls, no prose, no markdown fences.",
-    "The JSON must be exactly:",
-    '{"context":"FULL","findings":[{"severity":"low|medium|high|critical","category":"...","file":"...","line":1,"lineEnd":null,"title":"...","description":"...","evidence":"..."}]}',
-    'If there are no real issues, return {"context":"FULL","findings":[]}.',
-    "- severity: low|medium|high|critical.",
-    "- category: incorrect_parsing | wrong_type | off_by_one | race_condition | incorrect_termination | incorrect_order | missing_error_handling | robustness | error_propagation | security | resource_leak | performance | logic | misleading_name | inconsistent_terminology | inconsistent_style | api_design | unused_code | copy_paste | duplication | null_safety | test_quality.",
-    "- file: repository-relative path. line/lineEnd: 1-based line numbers as given.",
-    "- Only report real, concrete defects you can ground in the excerpts. Do not invent issues.",
-  ].join("\n")
-}
-
 export function buildJudgePrompt(scope: { files: string[]; diff?: string }, findings: JudgeFindingInput[]): string {
   const { text: rawDiff } = truncateDiff(scope.diff ?? "")
   const filesText = renderFileList(scope.files)
@@ -763,8 +740,8 @@ ${scope.diff ? encloseDiff(redactSecrets(rawDiff)) : "(no diff — files were re
 
 ${findingsText}
 
-You have the read_file tool: verify evidence claims against the actual files
-before trusting them.
+You judge from the evidence strings each reviewer cited; you have no file
+access, so verify consistency between each claim and its evidence.
 
 # VERDICTS
 

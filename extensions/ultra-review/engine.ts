@@ -130,9 +130,6 @@ function severityRank(severity: string): number {
   return SEV_RANK[severity.toUpperCase()] ?? 0
 }
 
-// Легаси-формат (однострочные находки) — фолбэк, если модель не выдала JSON
-const LEGACY_FINDING_RE = /^- \[(\w+)\] (.+?):(\d+)(?:-(\d+))? -- (.*)$/m
-
 /**
  * Кандидаты на JSON-вердикт из ответа модели. Модели оборачивают вердикт
  * прозой, фенсами и кодом с фигурными скобками — поэтому ищем по очереди:
@@ -199,25 +196,6 @@ function parseReviewOutput(text: string): { ok: true; output: JsonReviewOutput }
     } catch {
       // невалидный JSON — пробуем следующий кандидат
     }
-  }
-  // Легаси: "No issues found." / "- [SEV] file:line -- desc QUOTE: CONF:"
-  const findings: JsonFinding[] = []
-  for (const line of text.split("\n")) {
-    const m = line.match(LEGACY_FINDING_RE)
-    if (!m) continue
-    const quote = m[5].match(/QUOTE:\s*"([^"]*)"/)?.[1]
-    findings.push({
-      severity: m[1].toUpperCase(),
-      file: m[2],
-      line: Number(m[3]),
-      lineEnd: m[4] ? Number(m[4]) : null,
-      title: m[5].replace(/\s*QUOTE:\s*"[^"]*"\s*CONF:\s*[\d.]+/i, "").trim(),
-      evidence: quote,
-    })
-  }
-  const hasVerdict = /^VERDICT:\s*\w+/mi.test(text)
-  if (findings.length > 0 || hasVerdict) {
-    return { ok: true, output: { context: "FULL", findings } }
   }
   return { ok: false, reason: "malformed output (expected JSON review)" }
 }
@@ -388,11 +366,17 @@ function applyJudge(parsed: JudgeOutput, findings: JudgedFinding[], judgeModelNa
       continue
     }
     if (kind === "DOWNGRADE") {
-      downgrade++
       const ns = (v?.new_severity ?? f.severity).toUpperCase()
-      kept.push({ ...f, severity: ns as Severity })
-      lines.push(`- (${f.idx}) [${f.severity}→${ns}] ${where} — ${f.title} — ${who}${v?.rationale ? ` — ${v.rationale}` : ""}`)
-      continue
+      if (SEV_RANK[ns]) {
+        // Валидный new_severity — понижаем и сохраняем.
+        downgrade++
+        kept.push({ ...f, severity: ns as Severity })
+        lines.push(`- (${f.idx}) [${f.severity}→${ns}] ${where} — ${f.title} — ${who}${v?.rationale ? ` — ${v.rationale}` : ""}`)
+        continue
+      }
+      // Мусорный new_severity (не LOW/MEDIUM/HIGH/CRITICAL) — даунгрейд игнорируем,
+      // находка остаётся как есть (VALID): иначе "banana" попала бы в отчёт
+      // и молча обнулила severityRank в финальном вердикте.
     }
     valid++
     kept.push(f)
@@ -532,7 +516,8 @@ export async function executeReview(
     lines.push("")
   }
 
-  // Консенсус — только по вердиктным задачам; NEEDS_CONTEXT не считается ни за/против.
+  // Консенсус считается по задачам с вердиктом; NEEDS_CONTEXT не голосует, но
+  // остаётся в знаменателе: задача без контекста не даёт консенсусу стать APPROVED.
   const ok = results.length - errors
   const consensus = ok === 0 ? "NO_REVIEWS" : approved === ok ? "APPROVED" : rejected > ok / 2 ? "REJECTED" : "REQUIRES_HUMAN_REVIEW"
   lines.push("---", `**Consensus:** ${consensus} (${approved}/${ok} approved, ${rejected} rejected${errors ? `, ${errors} failed` : ""}${needsContext ? `, ${needsContext} needs context` : ""})`)
