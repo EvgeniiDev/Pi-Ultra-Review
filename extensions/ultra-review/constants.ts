@@ -46,3 +46,7 @@ export const SPECIALIZATIONS: Record<SpecId, string> = {
 export const EXTRA_MODELS = [
   "opencode-go/deepseek-v4-flash",
 ]
+
+// Провайдеры, чьи модели скрываем из мастера выбора. Быстро вернуть:
+// очистить массив ([]) или удалить строку — модели снова появятся в пуле.
+export const BLOCKED_PROVIDERS = ["openrouter"]

@@ -1,4 +1,4 @@
-import { EXTRA_MODELS, SPECIALIZATIONS } from "./constants.ts"
+import { BLOCKED_PROVIDERS, EXTRA_MODELS, SPECIALIZATIONS } from "./constants.ts"
 import { getScopes } from "./scopes.ts"
 import {
   SPEC_IDS,
@@ -20,16 +20,19 @@ const NEXT_PAGE = "→ Next page"
 
 /**
  * Пул для выбора: доп. модели (EXTRA_MODELS) + весь каталог pi, без дублей,
- * предпочтительные сверху.
+ * предпочтительные сверху. Модели провайдеров из blockedProviders (по умолчанию
+ * BLOCKED_PROVIDERS) скрыты; передача [] возвращает их — механика «быстро вернуть».
  */
-export function buildModelPool(registry: PiRegistryLike): PiModelLike[] {
+export function buildModelPool(registry: PiRegistryLike, blockedProviders: string[] = BLOCKED_PROVIDERS): PiModelLike[] {
   const extra = EXTRA_MODELS
     .map(parseModelKey)
     .map(({ provider, modelId }) => registry.find(provider, modelId))
     .filter((m): m is NonNullable<typeof m> => !!m)
   const all = registry.getAll()
   const seen = new Set<string>()
-  return [...extra, ...all].filter((m) => (seen.has(modelKey(m)) ? false : (seen.add(modelKey(m)), true)))
+  return [...extra, ...all]
+    .filter((m) => !blockedProviders.includes(m.provider))
+    .filter((m) => (seen.has(modelKey(m)) ? false : (seen.add(modelKey(m)), true)))
 }
 
 /**
