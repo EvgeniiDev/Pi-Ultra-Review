@@ -128,20 +128,24 @@ test("runAgent: пустой вердикт → ретрай продолжае�
     completeImpl = async () => {
       n++
       if (n === 1) {
-        // maxIterations=1 → isLast сразу: модель просит тул → ответ-ошибка, пустой текст.
+        // maxIterations=1 → isLast сразу: модель просит тул → пусто.
         const content = [{ type: "toolCall", id: "call-1", name: "read_file", arguments: { path: "a.py" } }]
         return { stopReason: "toolUse", content, assistantMessage: { role: "assistant", content } }
       }
-      // Ретрай: та же история (с toolResult от первой попытки и ноджем) → вердикт.
+      if (n === 2) {
+        // Внутрицикловый нодж тоже падает (тул-разметка текстом) → ретрай.
+        return { stopReason: "text", content: [{ type: "text", text: '<tool_calls>\n<invoke name="read_file">' }], assistantMessage: { role: "assistant", content: [{ type: "text", text: '<tool_calls>' }] } }
+      }
+      // Ретрай: та же история (с toolResult и ноджами) → вердикт.
       return { stopReason: "end_turn", content: [{ type: "text", text: verdict }], assistantMessage: { role: "assistant", content: [{ type: "text", text: verdict }] } }
     }
 
     const res = await runAgent(fakeRegistry as never, fakeModel as never, "sys", dir, undefined, { maxIterations: 1, maxToolCalls: 10 })
     expect(res.text).toBe(verdict)
-    expect(n).toBe(2)
+    expect(n).toBe(3)
     const history = JSON.stringify(lastMessages)
     expect(history).toContain("call-1") // toolResult первой попытки в истории
-    expect(history).toContain("previous response was empty") // нодж в ту же беседу
+    expect(history).toContain("previous response was empty") // ретрай-нодж в ту же беседу
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

@@ -268,13 +268,67 @@ export function extractText(content: unknown[]): string {
     .trim()
 }
 
-/** Структурные тул-вызовы из ответа модели (полноценные провайдеры их нормализуют). */
+/**
+ * Текст — это всё ещё тул-разметка (read_file и т.п.), а не ответ.
+ * Минимальные точные паттерны: обычный "<" в JSON-вердикте (напр.
+ * "off-by-one when i < n") маркером не является.
+ */
+export function isToolMarkup(text: string): boolean {
+  if (/<[\/]?\|?DSML/i.test(text)) return true
+  return /<invoke\s/i.test(text) || /<tool_calls>/i.test(text) || /<antml[:\s/>]/i.test(text)
+}
+
+let textToolCallId = 0
+
+// Модель иногда пишет тул-вызовы ТЕКСТОМ (Anthropic-нотация <invoke>) вместо
+// структурных блоков — это происходит и на opencode-go/deepseek-v4-flash
+// (3 из 7 задач в реальном прогоне). Парсим и исполняем; без этого такие
+// ответы уходили в malformed.
+function parseInvokeToolCalls(text: string): AgentToolCall[] {
+  const out: AgentToolCall[] = []
+  const invokeRe = /<invoke\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/invoke>/gi
+  for (const m of text.matchAll(invokeRe)) {
+    const name = m[1]
+    const body = m[2]
+    const args: Record<string, unknown> = {}
+    // Параметры двумя способами: <parameter name="path" string="true">.swarm/x</parameter>
+    // (вложенный) или <parameter name="startLine" value="1"/> (атрибут).
+    const paramRe = /<parameter\s+name="([^"]+)"\s*([^>]*)>/gi
+    for (const mm of body.matchAll(paramRe)) {
+      const pname = mm[1]
+      const attrs = mm[2]
+      const valAttr = /value="([^"]*)"/.exec(attrs)
+      if (valAttr) {
+        args[pname] = valAttr[1]
+        continue
+      }
+      const rest = body.slice(mm.index + mm[0].length)
+      const endM = /<\/parameter\s*>/i.exec(rest)
+      if (endM) args[pname] = rest.slice(0, endM.index).trim()
+    }
+    out.push({ id: `text-${++textToolCallId}`, name, arguments: args })
+  }
+  return out
+}
+
+/**
+ * Структурные тул-вызовы из ответа модели; если их нет — ищем текстовые
+ * <invoke> в текстовых блоках (модель написала тул-вызов текстом).
+ */
 export function extractToolCalls(content: unknown[]): AgentToolCall[] {
-  return content.filter((e): e is AgentToolCall => {
+  const structured = content.filter((e): e is AgentToolCall => {
     if (typeof e !== "object" || e === null) return false
     const c = e as { type?: unknown; name?: unknown; arguments?: unknown }
     return c.type === "toolCall" || (typeof c.name === "string" && typeof c.arguments === "object" && c.arguments !== null)
   })
+  if (structured.length > 0) return structured
+  const textual: AgentToolCall[] = []
+  for (const e of content) {
+    if (typeof e !== "object" || e === null) continue
+    const t = (e as { text?: unknown }).text
+    if (typeof t === "string") textual.push(...parseInvokeToolCalls(t))
+  }
+  return textual
 }
 
 /**
@@ -368,5 +422,18 @@ export async function runAgentLoop(
     }
   }
 
+  // Финал: пустой текст или всё ещё тул-разметка (модель «напечатала» вызов
+  // тула текстом на последней итерации) → один финальный no-tools запрос
+  // вердикта. Если и он вернул разметку — отдаём накопленный текст
+  // (пустой поймает retryOnEmpty, который продолжает ту же беседу).
+  if (!text.trim() || isToolMarkup(text)) {
+    const nudge = await chat(
+      [...messages, { role: "user", content: [{ type: "text", text: "No more tool calls are available. Output the final review verdict JSON directly as text now, based on what you have read." }], timestamp: Date.now() }],
+      [],
+      signal,
+    )
+    const verdict = extractText(nudge.content)
+    if (verdict && !isToolMarkup(verdict)) text = verdict
+  }
   return { text, iterations: maxIterations, toolCalls, messages }
 }

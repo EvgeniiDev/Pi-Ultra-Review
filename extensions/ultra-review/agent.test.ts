@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test"
-import { runAgentLoop, type AgentExecutor } from "./agent.ts"
+import { isToolMarkup, runAgentLoop, type AgentExecutor } from "./agent.ts"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Инвариант протокола tool-calling: апстрим (DeepSeek/Console и др.) валидирует,
@@ -141,6 +141,93 @@ test("no tool calls → single chat round, no protocol concerns", async () => {
   )
   expect(res.text).toBe("done")
   expect(calls).toBe(1)
+})
+
+test("textual <invoke> tool calls are parsed and executed (provider returned text markup)", async () => {
+  let calls = 0
+  const executed: Array<{ name: string; args: Record<string, unknown> }> = []
+  const chat = async (messages: unknown[], _tools: unknown[]) => {
+    assertProtocol(messages as Msg[])
+    calls++
+    if (calls === 1) {
+      // Модель написала тул-вызов ТЕКСТОМ (без структурных блоков).
+      const text =
+        '<tool_calls>\n<invoke name="read_file">\n<parameter name="path" string="true">src/a.ts</parameter>\n<parameter name="startLine" value="1"/>\n</invoke>\n</tool_calls>'
+      return {
+        assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
+        content: [{ type: "text", text }],
+        stopReason: "text",
+      }
+    }
+    const text = '{"context":"FULL","findings":[]}'
+    return {
+      assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
+      content: [{ type: "text", text }],
+      stopReason: "end",
+    }
+  }
+  const localExecutor: AgentExecutor = async (call) => {
+    executed.push({ name: call.name ?? "", args: (call.arguments as Record<string, unknown>) ?? {} })
+    return { ok: true, text: "contents of src/a.ts" }
+  }
+  const res = await runAgentLoop(
+    chat as never,
+    [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
+    [],
+    localExecutor,
+    { maxIterations: 5, maxToolCalls: 10 },
+    undefined,
+  )
+  expect(executed).toHaveLength(1)
+  expect(executed[0].name).toBe("read_file")
+  expect(executed[0].args).toEqual({ path: "src/a.ts", startLine: "1" })
+  expect(res.text).toBe('{"context":"FULL","findings":[]}')
+  expect(calls).toBe(2)
+})
+
+test("final text that is still tool markup gets a no-tools verdict nudge", async () => {
+  let calls = 0
+  const chat = async (messages: unknown[], toolsList: unknown[]) => {
+    assertProtocol(messages as Msg[])
+    calls++
+    if (calls === 1) {
+      // maxIterations=1 → isLast: модель просит тул структурно → пусто.
+      const content = [{ type: "toolCall", id: "call-1", name: "read_file", arguments: { path: "a.py" } }]
+      return { assistantMessage: { role: "assistant", content }, content, stopReason: "toolCalls" }
+    }
+    // Нодж: БЕЗ тулов, требует вердикт JSON текстом.
+    expect(toolsList).toHaveLength(0)
+    const lastUser = [...messages].reverse().find((m) => (m as Msg).role === "user")
+    expect(JSON.stringify(lastUser?.content ?? "")).toContain("verdict JSON")
+    const text = '{"context":"FULL","findings":[]}'
+    return {
+      assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
+      content: [{ type: "text", text }],
+      stopReason: "end",
+    }
+  }
+  const res = await runAgentLoop(
+    chat as never,
+    [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
+    [],
+    executor,
+    { maxIterations: 1, maxToolCalls: 10 },
+    undefined,
+  )
+  expect(res.text).toBe('{"context":"FULL","findings":[]}')
+  expect(calls).toBe(2)
+})
+
+test("isToolMarkup: '<' inside a JSON verdict is NOT tool markup", () => {
+  expect(isToolMarkup('{"context":"FULL","findings":[{"severity":"LOW","file":"src/a.ts","line":1,"title":"off-by-one when i < n"}]}')).toBe(false)
+  expect(isToolMarkup('if (a < b && c > d) {\n  doSomething()\n}')).toBe(false)
+})
+
+test("isToolMarkup: invoke/tool_calls/antml/DSML markup IS tool markup", () => {
+  expect(isToolMarkup('<invoke name="read_file">')).toBe(true)
+  expect(isToolMarkup('<tool_calls>\n<invoke name="read_file">')).toBe(true)
+  expect(isToolMarkup('<antml:invoke name="read_file">')).toBe(true)
+  expect(isToolMarkup('<|DSML|invoke name="read_file">')).toBe(true)
 })
 
 test("structured read_file calls are executed, then the verdict text is returned", async () => {
