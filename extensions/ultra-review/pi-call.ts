@@ -163,14 +163,26 @@ export async function runAgent(
   const effort = REASONING_EFFORT
 
   let toolCalls = 0
+  let messages: unknown[] = initialMessages
   const attempt = async (): Promise<string> => {
-    const chat: AgentChat = (messages, toolsList, s) =>
-      chatViaPi(registry, model, prompt, messages, toolsList as Tool[], s, undefined, effort)
-    const loop = await runAgentLoop(chat, initialMessages, tools, executor, {
+    const chat: AgentChat = (msgs, toolsList, s) =>
+      chatViaPi(registry, model, prompt, msgs, toolsList as Tool[], s, undefined, effort)
+    const loop = await runAgentLoop(chat, messages, tools, executor, {
       maxIterations: opts.maxIterations ?? 8,
       maxToolCalls: opts.maxToolCalls ?? 30,
     }, signal)
-    toolCalls = loop.toolCalls
+    toolCalls += loop.toolCalls
+    messages = loop.messages
+    if (!loop.text.trim()) {
+      // Пустой вердикт — продолжаем ТУ ЖЕ беседу, а не рестартуем цикл:
+      // файлы уже прочитаны, контекст накоплен, префикс запроса в кэше
+      // провайдера. Нодж в ту же историю вместо чтения всего заново.
+      messages.push({
+        role: "user",
+        content: [{ type: "text", text: "Your previous response was empty. Produce the final review verdict JSON now based on what you have read. You may read additional files if you need more context." }],
+        timestamp: Date.now(),
+      })
+    }
     return loop.text
   }
 

@@ -256,6 +256,8 @@ export interface AgentLoopResult {
   text: string
   iterations: number
   toolCalls: number
+  /** Накопленная история сообщений — для продолжения беседы при ретрае. */
+  messages: unknown[]
 }
 
 export function extractText(content: unknown[]): string {
@@ -283,8 +285,8 @@ export function extractToolCalls(content: unknown[]): AgentToolCall[] {
  * - жёстко ограничен: maxIterations итераций, maxToolCalls чтений,
  *   maxContextChars накопленного контекста;
  * - на последней итерации тулы убираются (модель обязана ответить); пустой
- *   финальный текст ловит retryOnEmpty (повтор всего цикла — редкий случай
- *   для капабельной модели).
+ *   финальный текст ловит retryOnEmpty, который продолжает ТУ ЖЕ беседу
+ *   (messages в результате) — контекст чтений и кэш-префикс сохраняются.
  */
 export async function runAgentLoop(
   chat: AgentChat,
@@ -312,7 +314,7 @@ export async function runAgentLoop(
     if (textPart) text = textPart
 
     if (calls.length === 0) {
-      return { text: textPart || text, iterations: iteration + 1, toolCalls }
+      return { text: textPart || text, iterations: iteration + 1, toolCalls, messages }
     }
     if (isLast) {
       // Модель всё ещё просит тулы, хотя их больше нет — отвечаем КАЖДОМУ
@@ -366,5 +368,5 @@ export async function runAgentLoop(
     }
   }
 
-  return { text, iterations: maxIterations, toolCalls }
+  return { text, iterations: maxIterations, toolCalls, messages }
 }

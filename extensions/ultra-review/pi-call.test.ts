@@ -12,12 +12,14 @@ import { test, expect, mock, beforeEach } from "bun:test"
 
 let completeCalls = 0
 let completeImpl: () => Promise<unknown> = async () => ({ stopReason: "end_turn", content: [] })
+let lastMessages: unknown[] = []
 
 // Мокаем pi-ai compat и константы (вне рантайма пи модуль не резолвится;
 // delay в тестах — 1ms вместо 1500ms). mock.module должен стоять до импорта.
 mock.module("@earendil-works/pi-ai/compat", () => ({
-  complete: async () => {
+  complete: async (_m: unknown, req: { messages?: unknown[] }) => {
     completeCalls++
+    lastMessages = req?.messages ?? []
     return completeImpl()
   },
 }))
@@ -49,6 +51,7 @@ const call = () => chatViaPi(fakeRegistry as never, fakeModel as never, "sys", [
 beforeEach(() => {
   completeCalls = 0
   completeImpl = async () => ({ stopReason: "end_turn", content: [] })
+  lastMessages = []
 })
 
 test("error-stopReason 'Stream ended' ретраится (2 попытки) и восстанавливается", async () => {
@@ -111,6 +114,37 @@ test("thrown не-retryable исключение → без ретраев", asy
   }
   await expect(call()).rejects.toThrow(/boom/)
   expect(completeCalls).toBe(1)
+})
+
+test("runAgent: пустой вердикт → ретрай продолжает ту же беседу (нодж, без рестарта)", async () => {
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises")
+  const { tmpdir } = await import("node:os")
+  const { join } = await import("node:path")
+  const dir = await mkdtemp(join(tmpdir(), "ur-continue-"))
+  try {
+    await writeFile(join(dir, "a.py"), "x = 1\n")
+    const verdict = '{"context":"FULL","findings":[]}'
+    let n = 0
+    completeImpl = async () => {
+      n++
+      if (n === 1) {
+        // maxIterations=1 → isLast сразу: модель просит тул → ответ-ошибка, пустой текст.
+        const content = [{ type: "toolCall", id: "call-1", name: "read_file", arguments: { path: "a.py" } }]
+        return { stopReason: "toolUse", content, assistantMessage: { role: "assistant", content } }
+      }
+      // Ретрай: та же история (с toolResult от первой попытки и ноджем) → вердикт.
+      return { stopReason: "end_turn", content: [{ type: "text", text: verdict }], assistantMessage: { role: "assistant", content: [{ type: "text", text: verdict }] } }
+    }
+
+    const res = await runAgent(fakeRegistry as never, fakeModel as never, "sys", dir, undefined, { maxIterations: 1, maxToolCalls: 10 })
+    expect(res.text).toBe(verdict)
+    expect(n).toBe(2)
+    const history = JSON.stringify(lastMessages)
+    expect(history).toContain("call-1") // toolResult первой попытки в истории
+    expect(history).toContain("previous response was empty") // нодж в ту же беседу
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test("runAgent: вердикт пишется прямо, без submit_review", async () => {
