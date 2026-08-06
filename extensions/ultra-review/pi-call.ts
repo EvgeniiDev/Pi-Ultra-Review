@@ -2,9 +2,9 @@ import { complete, type UserMessage } from "@earendil-works/pi-ai/compat"
 import type { Api, Message, Model, Tool } from "@earendil-works/pi-ai"
 import { Type } from "@sinclair/typebox"
 import { extractText, makeExecutor, runAgentLoop, type AgentChat, type AgentTurn } from "./agent.ts"
-import { EMPTY_RESPONSE_RETRIES, MODEL_MAX_TOKENS, MODEL_TEMPERATURE, RETRY_DELAY_MS, SIMPLIFY_MAX_ITERATIONS, SIMPLIFY_MAX_TOOL_CALLS } from "./constants.ts"
+import { EMPTY_RESPONSE_RETRIES, MODEL_MAX_TOKENS, MODEL_TEMPERATURE, REASONING_EFFORT, RETRY_DELAY_MS, SIMPLIFY_MAX_ITERATIONS, SIMPLIFY_MAX_TOOL_CALLS } from "./constants.ts"
 import { retryOnEmpty, retryOnFailure } from "./retry.ts"
-import { reasoningEffortFor, type PiModelLike, type PiRegistryLike, type ReasoningEffort } from "./types.ts"
+import type { PiModelLike, PiRegistryLike, ReasoningEffort } from "./types.ts"
 
 /**
  * Тул read_file: агент-ревьюер сам читает файлы по частям (строками),
@@ -58,10 +58,10 @@ export async function chatViaPi(
   const auth = await registry.getApiKeyAndHeaders(fullModel)
   if (!auth.ok) throw new Error(`No credentials for ${model.provider}: ${auth.error ?? "unknown"}`)
 
-  // zen-relay не декларирует supportsReasoningEffort, из-за чего pi-ai молча
-  // выбрасывает reasoning_effort и free-модель думает на полную: мышление
-  // накапливается в контексте (до 180K токенов) и релей абортит генерацию
-  // (502 AbortError). Патчим compat на лету, чтобы reasoning_effort дошёл.
+  // Некоторые провайдеры не декларируют supportsReasoningEffort, из-за чего
+  // pi-ai молча выбрасывает reasoning_effort и модель думает на полную:
+  // мышление накапливается в контексте и генерация обрывается. Патчим compat
+  // на лету, чтобы reasoning_effort дошёл.
   const effectiveModel = Object.create(Object.getPrototypeOf(fullModel)) as Model<Api>
   Object.assign(effectiveModel, fullModel)
   ;(effectiveModel as { compat?: Record<string, unknown> }).compat = {
@@ -130,7 +130,7 @@ export async function judgeViaPi(
         undefined, // без тулов
         signal,
         MODEL_MAX_TOKENS,
-        reasoningEffortFor(model),
+        REASONING_EFFORT,
       )
       const text = extractText(turn.content)
       if (text) return { text }
@@ -160,7 +160,7 @@ export async function runAgent(
   ]
   const readFiles = new Set<string>()
   const executor = makeExecutor(root, readFiles)
-  const effort = reasoningEffortFor(model)
+  const effort = REASONING_EFFORT
 
   let toolCalls = 0
   const attempt = async (): Promise<string> => {

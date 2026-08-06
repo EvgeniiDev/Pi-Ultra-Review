@@ -8,8 +8,6 @@ export const PROMPT_VERSION = "2026-08-07.json"
 // Параллельность ревью: не больше PROVIDER_MAX_CONCURRENCY одновременных
 // запросов к одному провайдеру и не больше GLOBAL_MAX_CONCURRENCY всего,
 // чтобы не долбить провайдера кучей запросов (rate-limit, socket exhaustion).
-// 1 на провайдера было под zen-relay free-тир (рвал стримы под нагрузкой);
-// для полноценных провайдеров (opencode-go и т.п.) 4 — безопасный дефолт.
 export const PROVIDER_MAX_CONCURRENCY = 4
 export const GLOBAL_MAX_CONCURRENCY = 10
 
@@ -18,12 +16,10 @@ export const GLOBAL_MAX_CONCURRENCY = 10
 export const MODEL_TEMPERATURE = 0.3
 // 64K output-токенов: под max reasoning (REASONING_EFFORT) модель тратит
 // бюджет на мышление — 32K могло обрезать длинную цепочку рассуждений.
-// deepseek-v4-flash поддерживает до 384K, запас безопасен.
 export const MODEL_MAX_TOKENS = 65536
 
-// Уровень reasoning для платных/капабельных моделей. Free-модели (релей)
-// получают "low" всегда — на max они сжигают бюджет на бесконечное мышление
-// и возвращают пустой ответ (см. reasoningEffortFor в types.ts).
+// Уровень reasoning для всех моделей: deepseek-v4-flash (opencode-go)
+// уверенно работает на max, вердикт получается после полного анализа.
 export const REASONING_EFFORT = "max"
 
 // Ретрай пустого ответа модели (иногда это временный затуп),
@@ -45,7 +41,7 @@ export const SPECIALIZATIONS: Record<SpecId, string> = {
   simplify: "Simplify (reuse, dead code, thin wrappers, cleanup)",
 }
 
-// Модели, которые всегда показываем в мастере помимо бесплатных.
+// Модели, которые всегда показываем в мастере в первую очередь.
 // Формат: "provider/modelId" из каталога pi.
 export const EXTRA_MODELS = [
   "opencode-go/deepseek-v4-flash",

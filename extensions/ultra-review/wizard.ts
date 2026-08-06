@@ -2,7 +2,6 @@ import { EXTRA_MODELS, SPECIALIZATIONS } from "./constants.ts"
 import { getScopes } from "./scopes.ts"
 import {
   SPEC_IDS,
-  isFreeModel,
   modelKey,
   modelLabel,
   parseModelKey,
@@ -20,17 +19,17 @@ const PREV_PAGE = "← Previous page"
 const NEXT_PAGE = "→ Next page"
 
 /**
- * Пул для выбора: доп. платные (EXTRA_MODELS) + бесплатные из каталога pi,
- * без дублей, предпочтительные сверху.
+ * Пул для выбора: доп. модели (EXTRA_MODELS) + весь каталог pi, без дублей,
+ * предпочтительные сверху.
  */
 export function buildModelPool(registry: PiRegistryLike): PiModelLike[] {
   const extra = EXTRA_MODELS
     .map(parseModelKey)
     .map(({ provider, modelId }) => registry.find(provider, modelId))
     .filter((m): m is NonNullable<typeof m> => !!m)
-  const free = registry.getAll().filter(isFreeModel)
+  const all = registry.getAll()
   const seen = new Set<string>()
-  return [...extra, ...free].filter((m) => (seen.has(modelKey(m)) ? false : (seen.add(modelKey(m)), true)))
+  return [...extra, ...all].filter((m) => (seen.has(modelKey(m)) ? false : (seen.add(modelKey(m)), true)))
 }
 
 /**
@@ -96,18 +95,11 @@ export async function runWizard(
   }
   if (selectedSpecs.length === 0) throw new Error("No specializations selected")
 
-  // 3. Models (бесплатные + доп. платные из EXTRA_MODELS)
+  // 3. Models (EXTRA_MODELS + весь каталог pi)
   const modelsToPickFrom = buildModelPool(ctx.modelRegistry)
 
   const selectedModels = await pickModels(ctx, modelsToPickFrom)
   if (selectedModels.length === 0) throw new Error("No models selected")
-
-  // Предупреждаем о платных моделях только если их реально выбрали,
-  // и перечисляем конкретные (не хардкод).
-  const paid = selectedModels.filter((m) => !isFreeModel(m))
-  if (paid.length > 0) {
-    ctx.ui.notify(`Selected paid model(s): ${paid.map(modelKey).join(", ")}. May incur costs.`, "warning")
-  }
 
   // 4. Deep mode
   const deep = await ctx.ui.confirm("Deep mode?", `Full matrix: ${selectedModels.length} × ${selectedSpecs.length} reviews. Off = round-robin.`)
