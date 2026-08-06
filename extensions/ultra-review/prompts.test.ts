@@ -26,6 +26,24 @@ test("prompt no longer instructs submit_review — verdict is plain JSON output"
   }
 })
 
+test("shared prefix precedes spec-specific sections (prefix-cache friendly)", () => {
+  // Общий для всех спеков блок (INPUT/TRUST BOUNDARY/TRUSTED CONTEXT) идёт
+  // ПЕРВЫМ, и дифф-блок использует ОДИН nonce (как в executeReview) — тогда
+  // у security/correctness/etc. одинаковый префикс запроса, и prefix-кэш
+  // провайдера отдаёт его как cache hit для всех спеков.
+  const nonce = "TESTNONCE"
+  const security = buildPrompt(scope, "security", nonce)
+  const correctness = buildPrompt(scope, "correctness", nonce)
+  const prefixS = security.slice(0, security.indexOf("# ROLE"))
+  const prefixC = correctness.slice(0, correctness.indexOf("# ROLE"))
+  expect(prefixS).toBe(prefixC)
+  expect(prefixS).toContain("# INPUT")
+  expect(prefixS).toContain("# TRUST BOUNDARY")
+  expect(prefixS).toContain("# TRUSTED CONTEXT")
+  expect(prefixS).not.toContain("# PRIMARY OBJECTIVE")
+  expect(prefixS).not.toContain("# SPECIALIST SCOPE")
+})
+
 test("simplify prompt documents two tools (read_file + search_files)", () => {
   const p = buildPrompt(scope, "simplify")
   expect(p).toContain("You have two tools:")

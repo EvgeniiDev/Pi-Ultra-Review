@@ -3,7 +3,7 @@ import type { Severity, SpecId } from "./types.ts"
 export const MAX_DIFF_CHARS = 20_000
 
 /** Версия промтов для отладки/evals: меняй при каждом изменении контракта. */
-export const PROMPT_VERSION = "2026-08-07.json"
+export const PROMPT_VERSION = "2026-08-07b.json"
 
 // Параллельность ревью: не больше PROVIDER_MAX_CONCURRENCY одновременных
 // запросов к одному провайдеру и не больше GLOBAL_MAX_CONCURRENCY всего,

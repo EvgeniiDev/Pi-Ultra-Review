@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs"
+import { randomUUID } from "node:crypto"
 import { join } from "node:path"
 import { GLOBAL_MAX_CONCURRENCY, PROMPT_VERSION, PROVIDER_MAX_CONCURRENCY } from "./constants.ts"
 import { git } from "./git.ts"
@@ -427,6 +428,10 @@ export async function executeReview(
   const files = cfg.scope.files
   const scopeFiles = new Set(files)
 
+  // Один nonce на прогон: buildPrompt всех спеков скоупа получает одинаковый
+  // дифф-блок → у запросов общий префикс, и prefix-кэш провайдера (DeepSeek
+  // кэширует по префиксу) отдаёт его как cache hit для каждого спека.
+  const promptNonce = randomUUID()
   const tasks = cfg.deep
     ? cfg.models.flatMap((m) => cfg.specs.map((s) => ({ model: m, spec: s })))
     : cfg.specs.map((s, i) => ({ model: cfg.models[i % cfg.models.length], spec: s }))
@@ -439,7 +444,7 @@ export async function executeReview(
     tasks.map(({ model, spec }) =>
       limiter.run(model.provider, async () => {
         try {
-          const out = await deps.callModel(model, buildPrompt(cfg.scope, spec), spec, signal)
+          const out = await deps.callModel(model, buildPrompt(cfg.scope, spec, promptNonce), spec, signal)
           return {
             modelName: `${model.provider}/${model.id}`,
             specName: spec,
@@ -529,7 +534,7 @@ export async function executeReview(
       const judgeModel = cfg.models[0]
       deps.ui.setStatus("ultra-review", `Judge pass: validating ${allFindings.length} findings...`)
       try {
-        const out = await deps.callModel(judgeModel, buildJudgePrompt(cfg.scope, allFindings), "judge", signal)
+        const out = await deps.callModel(judgeModel, buildJudgePrompt(cfg.scope, allFindings, promptNonce), "judge", signal)
         const parsed = parseJudgeJson(out.text)
         if (parsed?.verdicts?.length) {
           const judged = applyJudge(parsed, allFindings, `${judgeModel.provider}/${judgeModel.id}`)
