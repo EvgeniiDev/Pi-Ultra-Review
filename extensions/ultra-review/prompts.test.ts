@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { buildPrompt } from "./prompts.ts"
+import { buildJudgePrompt, buildPrompt } from "./prompts.ts"
 
 const scope = { files: ["src/a.ts"], diff: "diff --git a/src/a.ts b/src/a.ts\n+needle" }
 
@@ -16,6 +16,11 @@ test("security prompt does not mention search_files or simplify fields", () => {
   expect(p).not.toContain("search_files")
   expect(p).not.toContain("reuseTarget")
   expect(p).not.toContain('risk: "safe"')
+})
+
+test("judge prompt does not promise read_file (judge has no tools)", () => {
+  const p = buildJudgePrompt({ files: ["src/a.ts"] }, [])
+  expect(p).not.toContain("read_file")
 })
 
 test("prompt no longer instructs submit_review — verdict is plain JSON output", () => {

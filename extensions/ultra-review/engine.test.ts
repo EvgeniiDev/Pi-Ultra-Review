@@ -78,6 +78,90 @@ test("multiple fences: code sample first, json verdict second", () => {
   expect(r.context).toBe("FULL")
 })
 
+test("judge DOWNGRADE with new_severity HIGHER than original is ignored (no upgrade)", async () => {
+  const { mkdtempSync, mkdirSync, rmSync } = await import("node:fs")
+  const { tmpdir } = await import("node:os")
+  const dir = mkdtempSync(join(tmpdir(), "ur-upgrade-"))
+  const cfg: ReviewConfig = {
+    scope: { id: "test", label: "test scope", description: "", files: ["src/a.ts"] },
+    specs: ["security"],
+    models: [{ id: "m", name: "m", provider: "p", cost: { input: 1, output: 1 } }],
+    deep: false,
+    judge: true,
+  }
+  const deps: ReviewDeps = {
+    ui: { setStatus() {}, select: async () => "x", confirm: async () => true, notify() {} },
+    callModel: async (_m, _p, specId) => {
+      if (specId === "judge") {
+        // Судья пометил LOW-находку как DOWNGRADE с new_severity CRITICAL —
+        // это не понижение, а попытка апгрейда: игнорируем.
+        return {
+          text: '{"verdicts":[{"idx":1,"verdict":"DOWNGRADE","duplicate_of":null,"new_severity":"CRITICAL","rationale":"x"}],"summary":{"valid":0,"duplicate":0,"false_positive":0,"downgrade":1},"kept":[1]}',
+          toolCalls: 0,
+          readFiles: [],
+        }
+      }
+      return {
+        text: '{"context":"FULL","findings":[{"severity":"LOW","file":"src/a.ts","line":1,"title":"naming"}]}',
+        toolCalls: 1,
+        readFiles: ["src/a.ts"],
+      }
+    },
+  }
+  const { filename } = await executeReview(deps, dir, cfg)
+  const report = readFileSync(join(dir, "reviews", filename), "utf-8")
+  expect(report).toContain("(1) [LOW] src/a.ts:1 — naming")
+  expect(report).not.toContain("→CRITICAL")
+  expect(report).not.toContain("→HIGH")
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test("consensus is not APPROVED when most tasks failed (quorum)", async () => {
+  const { mkdtempSync, mkdirSync, rmSync } = await import("node:fs")
+  const { tmpdir } = await import("node:os")
+  const dir = mkdtempSync(join(tmpdir(), "ur-quorum-"))
+  const cfg: ReviewConfig = {
+    scope: { id: "test", label: "test scope", description: "", files: ["src/a.ts"] },
+    specs: ["security", "correctness", "performance"],
+    models: [{ id: "m", name: "m", provider: "p", cost: { input: 1, output: 1 } }],
+    deep: false,
+    judge: false,
+  }
+  const deps: ReviewDeps = {
+    ui: { setStatus() {}, select: async () => "x", confirm: async () => true, notify() {} },
+    callModel: async (_m, _p, specId) => {
+      if (specId !== "performance") throw new Error("provider down")
+      return {
+        text: '{"context":"FULL","findings":[]}',
+        toolCalls: 1,
+        readFiles: ["src/a.ts"],
+      }
+    },
+  }
+  const { filename } = await executeReview(deps, dir, cfg)
+  const report = readFileSync(join(dir, "reviews", filename), "utf-8")
+  // 2 задачи упали, 1 одобрила — APPROVED быть не должен (иначе 1/3 = зелёный свет).
+  expect(report).toContain("**Consensus:** REQUIRES_HUMAN_REVIEW")
+  expect(report).not.toContain("**Consensus:** APPROVED")
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test("missing or unknown context is treated as INSUFFICIENT (fail-closed)", () => {
+  const noContext = processTaskOutput('{"findings":[]}', "correctness", scopeFiles, readFiles)
+  expect(noContext.context).toBe("INSUFFICIENT")
+  const bogus = processTaskOutput('{"context":"bogus","findings":[]}', "correctness", scopeFiles, readFiles)
+  expect(bogus.context).toBe("INSUFFICIENT")
+})
+
+test("finding file with backslash or ./ spelling passes validation after normalization", () => {
+  const backslash = processTaskOutput('{"context":"FULL","findings":[{"severity":"LOW","file":"src\\\\a.ts","line":1,"title":"x"}]}', "correctness", scopeFiles, readFiles)
+  expect(backslash.findings).toHaveLength(1)
+  expect(backslash.findings[0].file).toBe("src/a.ts")
+  const dot = processTaskOutput('{"context":"FULL","findings":[{"severity":"LOW","file":"./src/a.ts","line":1,"title":"x"}]}', "correctness", scopeFiles, readFiles)
+  expect(dot.findings).toHaveLength(1)
+  expect(dot.findings[0].file).toBe("src/a.ts")
+})
+
 test("judge DOWNGRADE with invalid new_severity keeps the original severity", async () => {
   const { mkdtempSync, mkdirSync, rmSync } = await import("node:fs")
   const { tmpdir } = await import("node:os")

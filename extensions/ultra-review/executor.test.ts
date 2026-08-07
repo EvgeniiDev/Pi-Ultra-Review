@@ -30,6 +30,16 @@ beforeAll(() => {
 })
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
+test("makeExecutor records normalized forward-slash paths in readFiles", async () => {
+  const readFiles = new Set<string>()
+  const exec = makeExecutor(root, readFiles)
+  // Backslash-путь (как модель цитирует то, что увидела в ответе read_file на Windows).
+  await exec({ name: "read_file", arguments: { path: "src\\a.ts" } })
+  expect(readFiles.has("src/a.ts")).toBe(true)
+  const ok = await exec({ name: "read_file", arguments: { path: "src/a.ts" } })
+  expect(ok.ok).toBe(true)
+})
+
 test("makeExecutor records only successful reads in readFiles", async () => {
   const readFiles = new Set<string>()
   const exec = makeExecutor(root, readFiles)

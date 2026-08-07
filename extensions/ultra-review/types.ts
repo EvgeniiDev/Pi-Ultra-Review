@@ -104,6 +104,12 @@ export const modelKey = (m: PiModelLike): string => `${m.provider}/${m.id}`
 
 export const modelLabel = (m: PiModelLike): string => `${modelKey(m)} — ${m.name}`
 
+/**
+ * Нормализация пути для валидации находок: backslash → forward slash (Windows
+ * возвращает "src\\a.ts", манифест хранит "src/a.ts"), срезаем ведущий "./".
+ */
+export const normalizePath = (p: string): string => p.replace(/\\/g, "/").replace(/^\.\//, "")
+
 /** Разбирает "openrouter/deepseek/deepseek-v4-flash" на provider + modelId. */
 export const parseModelKey = (key: string): { provider: string; modelId: string } => {
   const i = key.indexOf("/")

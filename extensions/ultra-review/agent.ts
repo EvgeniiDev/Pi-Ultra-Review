@@ -1,5 +1,6 @@
 import { readFile, readdir, realpath, stat } from "node:fs/promises"
 import { isAbsolute, join, relative, resolve } from "node:path"
+import { normalizePath } from "./types.ts"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Агентный слой: ревьюер читает файлы сам, по частям, через read_file.
@@ -228,11 +229,12 @@ export function makeExecutor(root: string, readFiles: Set<string>): AgentExecuto
     }
     const path = String(args.path ?? "")
     const res = await readFileSafely(root, path, args.startLine as number | undefined, args.endLine as number | undefined)
-    // В readFiles — только УСПЕШНО прочитанные пути: processTaskOutput по этому
-    // сэту пропускает находки («файл прочитан — контент видели»). Раньше путь
-    // добавлялся ДО чтения, и галлюцинация на .git/config или node_modules/x
-    // (чтение упало, контента модель не видела) проходила серверную валидацию.
-    if (res.ok && path) readFiles.add(path)
+    // В readFiles — только УСПЕШНО прочитанные пути (нормализованные: модель
+    // цитирует backslash-путь из ответа на Windows, а валидация идёт по
+    // forward-slash манифесту). Раньше путь добавлялся ДО чтения, и галлюцинация
+    // на .git/config или node_modules/x (чтение упало, контента модель не видела)
+    // проходила серверную валидацию.
+    if (res.ok && path) readFiles.add(normalizePath(path))
     return res
   }
 }

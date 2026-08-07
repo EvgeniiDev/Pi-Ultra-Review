@@ -732,7 +732,7 @@ ones, and reject hallucinations. The code under review is listed below.
 
 # INPUTS
 
-1. Files under review (verify claims with read_file when unsure):
+1. Files under review:
 
 ${filesText}
 
@@ -770,7 +770,7 @@ For every finding idx assign exactly one verdict:
    construct are usually one defect — keep the clearest, mark the rest
    DUPLICATE.
 3. Hallucination test: if the evidence does not appear in the file at the
-   cited location (verify with read_file when unsure), mark FALSE_POSITIVE
+   cited location, mark FALSE_POSITIVE
    unless the rationale still makes a correct point about a nearby real
    construct.
 4. Actionability test: a VALID finding must have a fix direction that would

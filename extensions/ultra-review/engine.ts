@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { GLOBAL_MAX_CONCURRENCY, PROMPT_VERSION, PROVIDER_MAX_CONCURRENCY } from "./constants.ts"
 import { git } from "./git.ts"
 import { buildJudgePrompt, buildPrompt, REVIEW_SPECS } from "./prompts.ts"
-import { assertSpecId, type PiModelLike, type ReviewConfig, type Severity, type SimplifyAction, type SimplifyRisk, type UiLike } from "./types.ts"
+import { assertSpecId, normalizePath, type PiModelLike, type ReviewConfig, type Severity, type SimplifyAction, type SimplifyRisk, type UiLike } from "./types.ts"
 
 export interface ReviewDeps {
   ui: UiLike
@@ -224,7 +224,7 @@ export function processTaskOutput(output: string, specId: string, scopeFiles: Se
   const isSimplify = specId === "simplify"
 
   for (const f of parsed.output.findings ?? []) {
-    const file = typeof f.file === "string" ? f.file.trim() : ""
+    const file = typeof f.file === "string" ? normalizePath(f.file.trim()) : ""
     const line = typeof f.line === "number" && Number.isInteger(f.line) && f.line > 0 ? f.line : null
     const sev = typeof f.severity === "string" ? f.severity.toUpperCase() : ""
 
@@ -264,8 +264,12 @@ export function processTaskOutput(output: string, specId: string, scopeFiles: Se
     })
   }
 
-  const context = typeof parsed.output.context === "string" ? parsed.output.context.toUpperCase() : "FULL"
-  return { context: context === "INSUFFICIENT" || context === "PARTIAL" || context === "FULL" ? context : "FULL", findings, rejectedCount }
+  const rawContext = typeof parsed.output.context === "string" ? parsed.output.context.toUpperCase() : ""
+  // Контракт нарушен (context отсутствует или неизвестен) — консервативно
+  // INSUFFICIENT: иначе обрезанный ответ без context проходил бы как FULL,
+  // и пустые findings давали APPROVED (fail-open).
+  const context = rawContext === "FULL" || rawContext === "PARTIAL" || rawContext === "INSUFFICIENT" ? rawContext : "INSUFFICIENT"
+  return { context, findings, rejectedCount }
 }
 
 /** Политика вердикта — серверная, не от модели. LOW advisory. */
@@ -368,16 +372,16 @@ function applyJudge(parsed: JudgeOutput, findings: JudgedFinding[], judgeModelNa
     }
     if (kind === "DOWNGRADE") {
       const ns = (v?.new_severity ?? f.severity).toUpperCase()
-      if (SEV_RANK[ns]) {
-        // Валидный new_severity — понижаем и сохраняем.
+      // Только реальное ПОНИЖЕНИЕ: new_severity строго ниже исходной severity.
+      // Судья может прислать "DOWNGRADE" с higher new_severity (LOW→CRITICAL) —
+      // применять это значило бы апгрейд; находка остаётся как есть (VALID).
+      if (SEV_RANK[ns] && SEV_RANK[ns] < SEV_RANK[f.severity]) {
         downgrade++
         kept.push({ ...f, severity: ns as Severity })
         lines.push(`- (${f.idx}) [${f.severity}→${ns}] ${where} — ${f.title} — ${who}${v?.rationale ? ` — ${v.rationale}` : ""}`)
         continue
       }
-      // Мусорный new_severity (не LOW/MEDIUM/HIGH/CRITICAL) — даунгрейд игнорируем,
-      // находка остаётся как есть (VALID): иначе "banana" попала бы в отчёт
-      // и молча обнулила severityRank в финальном вердикте.
+      // Невалидный new_severity или не-понижение — находка остаётся как есть (VALID).
     }
     valid++
     kept.push(f)
@@ -426,7 +430,7 @@ export async function executeReview(
   }
 
   const files = cfg.scope.files
-  const scopeFiles = new Set(files)
+  const scopeFiles = new Set(files.map(normalizePath))
 
   // Один nonce на прогон: buildPrompt всех спеков скоупа получает одинаковый
   // дифф-блок → у запросов общий префикс, и prefix-кэш провайдера (DeepSeek
@@ -522,9 +526,11 @@ export async function executeReview(
   }
 
   // Консенсус считается по задачам с вердиктом; NEEDS_CONTEXT не голосует, но
-  // остаётся в знаменателе: задача без контекста не даёт консенсусу стать APPROVED.
+  // остаётся в знаменателе. APPROVED только когда ВСЕ задачи одобрены: упавшие
+  // НЕ вычитаются из знаменателя — иначе 1 approved среди 5 ошибок дал бы
+  // APPROVED (кворум).
   const ok = results.length - errors
-  const consensus = ok === 0 ? "NO_REVIEWS" : approved === ok ? "APPROVED" : rejected > ok / 2 ? "REJECTED" : "REQUIRES_HUMAN_REVIEW"
+  const consensus = ok === 0 ? "NO_REVIEWS" : approved === results.length ? "APPROVED" : rejected > ok / 2 ? "REJECTED" : "REQUIRES_HUMAN_REVIEW"
   lines.push("---", `**Consensus:** ${consensus} (${approved}/${ok} approved, ${rejected} rejected${errors ? `, ${errors} failed` : ""}${needsContext ? `, ${needsContext} needs context` : ""})`)
 
   // ── Судья (опционально)
