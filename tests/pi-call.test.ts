@@ -79,7 +79,7 @@ mock.module("@earendil-works/pi-coding-agent", () => ({
   SettingsManager: { inMemory: () => ({}) },
 }))
 
-const { runAgent, judgeViaPi } = await import("./pi-call.ts")
+const { runAgent, judgeViaPi } = await import("../extensions/ultra-review/pi-call.ts")
 
 const model = { provider: "test", id: "m", name: "m", cost: { input: 1, output: 1 } }
 

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { BLOCKED_DIRS, readFileSafely } from "./agent.ts"
+import { BLOCKED_DIRS, readFileSafely } from "../extensions/ultra-review/agent.ts"
 
 // Песочница чтения: путь обязан остаться внутри root, служебные папки
 // заблокированы, симлинки за пределы не выпускаются.
