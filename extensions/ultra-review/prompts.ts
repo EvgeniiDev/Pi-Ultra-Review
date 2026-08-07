@@ -498,6 +498,12 @@ export function buildPrompt(scope: { files: string[]; diff?: string; commits?: s
     : ""
   const omittedFiles = scope.files.filter((f) => !visibleFiles.has(f))
   const lang = detectLanguage(scope.files)
+  const hasTestFiles = scope.files.some((f) => classifyFile(f) === "test")
+  const testFileNote = !hasTestFiles
+    ? ""
+    : specId === "test_integrity"
+      ? "Note: test files are the primary subject of this review. The usual test-file severity cap does NOT apply here: a weakened or disabled gate is a HIGH/CRITICAL finding regardless of file kind."
+      : "Note: test files remain under the usual test-file rule for this perspective: severity capped at MEDIUM; skip style noise."
 
   return `
 # INPUT
@@ -565,18 +571,7 @@ ${renderBullets(spec.investigate)}
 
 Explicitly ignore:
 
-${renderBullets(spec.ignore)}
-
-${specId === "test_integrity"
-  ? `
-Note: test files are the primary subject of this review. The usual test-file
-severity cap does NOT apply here: a weakened or disabled gate is a
-HIGH/CRITICAL finding regardless of file kind.
-`
-  : `
-Note: test files remain under the usual test-file rule:
-"kind=test — severity capped at MEDIUM"; skip style noise.
-`}
+${renderBullets(spec.ignore)}${testFileNote ? `\n\n${testFileNote}` : ""}
 
 A concern outside this scope must not be reported, even if it is valid from
 another review perspective.
