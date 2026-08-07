@@ -66,9 +66,9 @@
 
 ### Кап «test-файлы ≤ MEDIUM» снимается для этого спека
 
-`renderFileMetadata(files, specId?)` — для `test_integrity` политика файла `kind=test`
-заменяется на: `kind=test — primary subject; gate-weakening findings may be HIGH/CRITICAL`.
-Остальные kind (generated/lockfile/code) не меняются.
+`renderFileMetadata(files, specId?)` → спец-заметка в секции SPECIALIST SCOPE промпта
+(test-файлы — основной объект; кап MEDIUM не действует). Общий префикс всех спеков
+не ломается (prefix-кэш), shared-prefix тест остаётся зелёным.
 
 ---
 
