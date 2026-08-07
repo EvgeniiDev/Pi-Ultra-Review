@@ -80,3 +80,28 @@ test("resolveScope: точное совпадение, branch_vs_*-префик�
   expect(resolveScope(scopes, "nope")).toBeUndefined()
   expect(resolveScope([], "branch_vs_main")).toBeUndefined()
 })
+
+test("getScopes: git-скоупы получают коммит-историю, current_dir — нет", () => {
+  const scopes = getScopes(repo)
+  const byId = Object.fromEntries(scopes.map((s) => [s.id, s]))
+  // branch: история A..B — формат "%h %s%n%b": короткий хэш + subject.
+  expect(byId["branch_vs_origin/main"].commits).toMatch(/^[0-9a-f]{7,} second/)
+  // last_commit: fuller-вывод содержит автора.
+  expect(byId["last_commit"].commits).toContain("Author:")
+  // current_dir — истории нет.
+  expect(byId["current_dir"].commits).toBeUndefined()
+})
+
+test("getScopes: working_tree в грязном дереве получает недавнюю историю", () => {
+  const scopes = getScopes(dirty)
+  expect(scopes[0].id).toBe("working_tree")
+  expect(scopes[0].commits).toContain("init")
+})
+
+test("resolveScope: last_N_commits синтезирует историю", () => {
+  const scopes = getScopes(repo)
+  const s = resolveScope(scopes, "last_2_commits", repo)
+  expect(s?.id).toBe("last_2_commits")
+  expect(s?.commits).toContain("init")
+  expect(s?.commits).toContain("second")
+})
