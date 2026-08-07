@@ -37,7 +37,14 @@ export function resolveScope(scopes: Scope[], scopeId: string, cwd?: string): Sc
   const m = /^last_(\d+)_commits$/.exec(scopeId)
   if (m && cwd) {
     try {
-      const diff = git(`git diff HEAD~${m[1]} HEAD`, cwd)
+      // HEAD~N не резолвится, когда история короче N коммитов (HEAD~N за корнем):
+      // тогда дифф считаем от пустого дерева — это «все коммиты истории».
+      let diff: string
+      try {
+        diff = git(`git diff HEAD~${m[1]} HEAD`, cwd)
+      } catch {
+        diff = git("git diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD", cwd)
+      }
       if (diff) {
         return {
           id: scopeId,
@@ -45,11 +52,22 @@ export function resolveScope(scopes: Scope[], scopeId: string, cwd?: string): Sc
           description: `files changed in the last ${m[1]} commits`,
           files: extractFiles(diff),
           diff,
+          commits: commitHistory(cwd, `git log -${m[1]} --pretty=format:"%h %s%n%b"`),
         }
       }
     } catch {}
   }
   return undefined
+}
+
+/** Коммит-история для скоупа: undefined, если git её не дал (нет истории). */
+function commitHistory(cwd: string, cmd: string): string | undefined {
+  try {
+    const out = git(cmd, cwd)
+    return out || undefined
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -68,6 +86,7 @@ export function getScopes(cwd: string): Scope[] {
         description: `${status.split("\n").length} changes`,
         files: extractFiles(diff),
         diff,
+        commits: commitHistory(cwd, 'git log -10 --pretty=format:"%h %s"'),
       })
     }
   } catch {}
@@ -97,6 +116,7 @@ export function getScopes(cwd: string): Scope[] {
           description: `${git(`git rev-list --count ${base}..HEAD`, cwd)} commits ahead`,
           files: extractFiles(diff),
           diff,
+          commits: commitHistory(cwd, `git log --max-count=150 --pretty=format:"%h %s%n%b" ${base}..HEAD`),
         })
         break
       }
@@ -114,6 +134,7 @@ export function getScopes(cwd: string): Scope[] {
         description: "files changed in HEAD",
         files: extractFiles(diff),
         diff,
+        commits: commitHistory(cwd, "git show -s --format=fuller HEAD"),
       })
     }
   } catch {}

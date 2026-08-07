@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { buildJudgePrompt, buildPrompt } from "./prompts.ts"
+import { buildJudgePrompt, buildPrompt, truncateCommits } from "./prompts.ts"
 
 const scope = { files: ["src/a.ts"], diff: "diff --git a/src/a.ts b/src/a.ts\n+needle" }
 
@@ -93,4 +93,29 @@ test("style prompt documents X-Out names test and naming-over-comments", () => {
   const p = buildPrompt(scope, "style")
   expect(p).toContain("X-Out names test")
   expect(p).toContain("better name or type")
+})
+
+test("commit history section rendered when scope.commits present, absent otherwise", () => {
+  const withCommits = buildPrompt({ files: ["src/a.ts"], diff: "+x", commits: "abc123 second\n" }, "change_quality")
+  expect(withCommits).toContain("# COMMIT HISTORY (untrusted)")
+  expect(withCommits).toContain("BEGIN UNTRUSTED COMMIT HISTORY")
+  expect(withCommits).toContain("abc123 second")
+  const without = buildPrompt({ files: ["src/a.ts"], diff: "+x" }, "change_quality")
+  expect(without).not.toContain("# COMMIT HISTORY")
+})
+
+test("commit history is truncated at line boundaries (cap)", () => {
+  const big = "line1\n" + "x".repeat(25_000) + "\nlast\n"
+  const { text, truncated } = truncateCommits(big)
+  expect(truncated).toBe(true)
+  expect(text.length).toBeLessThanOrEqual(20_000)
+  expect(text.length === 20_000 || big[text.length] === "\n").toBe(true)
+})
+
+test("commit history shares the prefix with other specs (prefix-cache friendly)", () => {
+  const nonce = "TESTNONCE"
+  const scope = { files: ["src/a.ts"], diff: "+x", commits: "abc123 second\n" }
+  const cq = buildPrompt(scope, "change_quality", nonce)
+  const sec = buildPrompt(scope, "security", nonce)
+  expect(cq.slice(0, cq.indexOf("# ROLE"))).toBe(sec.slice(0, sec.indexOf("# ROLE")))
 })

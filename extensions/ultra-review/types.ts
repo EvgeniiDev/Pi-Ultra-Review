@@ -23,6 +23,8 @@ export interface Scope {
   files: string[]
   /** Git-диф изменений — только для git-скоупов (working_tree / branch). */
   diff?: string
+  /** Git-история изменения (для change_quality). Только git-скоупы. */
+  commits?: string
 }
 
 export type Severity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"

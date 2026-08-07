@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { MAX_DIFF_CHARS } from "./constants.ts"
+import { MAX_COMMIT_CHARS, MAX_DIFF_CHARS } from "./constants.ts"
 import { extractFiles } from "./git.ts"
 import { assertSpecId, type ReviewSpec, type SpecId } from "./types.ts"
 
@@ -373,21 +373,22 @@ export function sanitizeDiff(diff: string): string {
 
 /**
  * Nonce-границы вместо markdown fence: fence может быть закрыт содержимым
- * diff (``` или ```diff), nonce гарантированно в diff отсутствует.
+ * диффа (``` или ```diff), nonce гарантированно в диффе отсутствует.
  * Санитизирует control-символы независимо от вызывающего (defense in depth).
+ * label задаёт имя блока (DIFF / COMMIT HISTORY) для маркеров.
  * nonce можно передать извне (стабильный на прогон ревью): тогда промпты
  * всех спеков одного скоупа имеют идентичный дифф-блок → prefix-кэш
  * провайдера отдаёт его как cache hit. Без nonce — случайный (безопасность).
  */
-export function encloseDiff(diff: string, nonce?: string): string {
-  const sanitized = sanitizeDiff(diff)
+export function encloseDiff(text: string, nonce?: string, label = "DIFF"): string {
+  const sanitized = sanitizeDiff(text)
   let n = nonce
   if (!n || sanitized.includes(n)) {
     do {
       n = randomUUID().replaceAll("-", "")
     } while (sanitized.includes(n))
   }
-  return `BEGIN UNTRUSTED DIFF nonce=${n}\n${sanitized}\nEND UNTRUSTED DIFF nonce=${n}`
+  return `BEGIN UNTRUSTED ${label} nonce=${n}\n${sanitized}\nEND UNTRUSTED ${label} nonce=${n}`
 }
 
 /**
@@ -404,6 +405,18 @@ export function truncateDiff(diff: string): { text: string; truncated: boolean; 
     text = sanitized.slice(0, cut === -1 ? MAX_DIFF_CHARS : cut)
   }
   return { text, truncated: wasTruncated, visibleFiles: new Set(extractFiles(text)) }
+}
+
+/** Обрезка истории коммитов по границам строк (кап MAX_COMMIT_CHARS). */
+export function truncateCommits(text: string, maxChars = MAX_COMMIT_CHARS): { text: string; truncated: boolean } {
+  const sanitized = sanitizeDiff(text)
+  const wasTruncated = sanitized.length > maxChars
+  let out = sanitized
+  if (wasTruncated) {
+    const cut = sanitized.lastIndexOf("\n", maxChars)
+    out = sanitized.slice(0, cut === -1 ? maxChars : cut)
+  }
+  return { text: out, truncated: wasTruncated }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -474,11 +487,15 @@ export function detectLanguage(files: string[]): string {
 // Промпт ревьюера: JSON-контракт вывода, verdict/risk считает инструмент.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function buildPrompt(scope: { files: string[]; diff?: string }, specId: SpecId, nonce?: string): string {
+export function buildPrompt(scope: { files: string[]; diff?: string; commits?: string }, specId: SpecId, nonce?: string): string {
   const spec = REVIEW_SPECS[assertSpecId(specId)]
   const filesText = renderFileList(scope.files)
   const { text: rawDiff, truncated, visibleFiles } = truncateDiff(scope.diff ?? "")
   const diffSection = scope.diff ? `Changes under review (diff):\n\n${encloseDiff(redactSecrets(rawDiff), nonce)}` : ""
+  const { text: rawCommits, truncated: commitsTruncated } = truncateCommits(scope.commits ?? "")
+  const commitSection = rawCommits
+    ? `# COMMIT HISTORY (untrusted)\n\n${encloseDiff(redactSecrets(rawCommits), nonce, "COMMIT HISTORY")}${commitsTruncated ? "\n\n⚠ commit history truncated at a line boundary." : ""}`
+    : ""
   const omittedFiles = scope.files.filter((f) => !visibleFiles.has(f))
   const lang = detectLanguage(scope.files)
 
@@ -490,6 +507,7 @@ Files under review (read them with read_file as needed):
 ${filesText}
 
 ${diffSection}
+${commitSection}
 
 # TRUST BOUNDARY
 
