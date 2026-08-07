@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { buildJudgePrompt, type JudgeFindingInput } from "./prompts.ts"
+import { buildJudgePrompt, type JudgeFindingInput } from "../extensions/ultra-review/prompts.ts"
 
 test("judge prompt includes risk/action and the consistency rule when present", () => {
   const f: JudgeFindingInput = { idx: 1, severity: "LOW", file: "src/a.ts", line: 1, title: "dead code", risk: "safe", action: "delete", agent: "a", spec: "simplify" }

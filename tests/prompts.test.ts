@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { buildJudgePrompt, buildPrompt, truncateCommits } from "./prompts.ts"
+import { buildJudgePrompt, buildPrompt, truncateCommits } from "../extensions/ultra-review/prompts.ts"
 
 const scope = { files: ["src/a.ts"], diff: "diff --git a/src/a.ts b/src/a.ts\n+needle" }
 
