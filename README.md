@@ -73,11 +73,9 @@ pi install git:github.com/EvgeniiDev/Pi-Ultra-Review
 
 ## Совместимость
 
-**Текущая версия плагина: 1.3.0**
-
 Проверено и работает на **Pi 0.83.0**. Версия ниже может работать, но не гарантируется.
 
-Рекомендуемая модель: **`opencode-go/deepseek-v4-flash`** — плагин заточен под её возможности: 1M контекст, max reasoning, 384K max output.
+Рекомендуемая модель: **`opencode-go/deepseek-v4-flash`** — большая контекстная рамка (1M) удобна для чтения диффов целиком, а глубокие размышления (max reasoning) плагин использует при ревью.
 
 > Free-модели (zen-relay) на `main` не поддерживаются — версия с их костылями живёт на ветке [`free-model-support`](https://github.com/EvgeniiDev/Pi-Ultra-Review/tree/free-model-support).
 
