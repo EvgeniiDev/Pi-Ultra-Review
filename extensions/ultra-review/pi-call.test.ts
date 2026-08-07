@@ -1,312 +1,141 @@
 import { test, expect, mock, beforeEach } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Регрессия: "Stream ended without finish_reason" (оборванный апстримом стрим,
-// типичен для free-тира через релей) и 429/rate-limit могут прийти ДВУМЯ путями:
-//   а) исключение из complete() — ретраилось и раньше;
-//   б) graceful error-ответ (stopReason === "error", errorMessage) — раньше
-//      бросалось уже ПОСЛЕ retry-обёртки, т.е. без единого ретрая.
-// Теперь error-stopReason с retryable-сообщением бросается из замыкания,
-// чтобы его подхватил retryOnFailure.
+// Тесты агентного слоя на SDK pi: мокаем @earendil-works/pi-coding-agent,
+// проверяем, что runAgent/judgeViaPi создают сессию с НАШИМИ тулами (без
+// системных bash/read), вызывают prompt, извлекают текст, делают followUp
+// при не-вердикте и всегда dispose().
 // ─────────────────────────────────────────────────────────────────────────────
 
-let completeCalls = 0
-let completeImpl: () => Promise<unknown> = async () => ({ stopReason: "end_turn", content: [] })
-let lastMessages: unknown[] = []
-let lastOptions: Record<string, unknown> = {}
+let sessionOpts: any = null
+let promptCalls: string[] = []
+let followUpCalls: string[] = []
+let disposed = 0
+let fakeMessages: any[] = []
+let autoReadPath: string | null = null
 
-// Мокаем pi-ai compat и константы (вне рантайма пи модуль не резолвится;
-// delay в тестах — 1ms вместо 1500ms). mock.module должен стоять до импорта.
-mock.module("@earendil-works/pi-ai/compat", () => ({
-  complete: async (_m: unknown, req: { messages?: unknown[] }, opts: Record<string, unknown>) => {
-    completeCalls++
-    lastMessages = req?.messages ?? []
-    lastOptions = opts ?? {}
-    return completeImpl()
-  },
-}))
-
+// typebox — peer-зависимость pi (в рантайме есть, в bun-тестах нет).
 mock.module("@sinclair/typebox", () => ({
   Type: { String: () => ({}), Number: () => ({}), Boolean: () => ({}), Optional: (x: unknown) => x, Array: (x: unknown) => x, Object: (x: unknown) => x },
 }))
 
-mock.module("./constants.ts", () => ({
-  EMPTY_RESPONSE_RETRIES: 2,
-  RETRY_DELAY_MS: 1, // в тестах — 1ms вместо 1500ms
-  MODEL_MAX_TOKENS: 8192,
-  MODEL_TEMPERATURE: 0.3,
-  SIMPLIFY_MAX_ITERATIONS: 10,
-  SIMPLIFY_MAX_TOOL_CALLS: 40,
-  MAX_AGENT_ITERATIONS: 10,
-  MAX_AGENT_TOOL_CALLS: 40,
-  MAX_DIFF_CHARS: 60_000,
-  REASONING_EFFORT: "max",
+mock.module("@earendil-works/pi-coding-agent", () => ({
+  createAgentSession: async (opts: any) => {
+    sessionOpts = opts
+    return {
+      session: {
+        prompt: async (text: string) => {
+          promptCalls.push(text)
+          // Имитируем модель, читающую файл через наш read_file внутри сессии.
+          if (autoReadPath) {
+            await sessionOpts.customTools.find((t: any) => t.name === "read_file").execute("id", { path: autoReadPath })
+          }
+        },
+        followUp: async (text: string) => {
+          followUpCalls.push(text)
+          // После followUp модель «отвечает» вердиктом.
+          fakeMessages = [{ role: "assistant", content: [{ type: "text", text: '{"context":"FULL","findings":[]}' }] }]
+        },
+        dispose: () => {
+          disposed++
+        },
+        subscribe: () => () => {},
+        agent: {
+          state: {
+            get messages() {
+              return fakeMessages
+            },
+          },
+        },
+      },
+    }
+  },
+  defineTool: (def: any) => def,
+  DefaultResourceLoader: class {
+    constructor(_o: any) {}
+    async reload() {}
+  },
+  ModelRuntime: {
+    create: async () => ({ getModel: (p: string, id: string) => ({ provider: p, id }) }),
+  },
+  SessionManager: { inMemory: () => ({}) },
+  SettingsManager: { inMemory: () => ({}) },
 }))
 
-const { chatViaPi, runAgent } = await import("./pi-call.ts")
+const { runAgent, judgeViaPi } = await import("./pi-call.ts")
 
-const fakeRegistry = {
-  getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key", headers: {}, env: {} }),
-}
-// cost задан, чтобы reasoningEffortFor трактовал модель как платную (max).
-const fakeModel = { provider: "test", id: "m", cost: { input: 1, output: 1 } }
-const call = () => chatViaPi(fakeRegistry as never, fakeModel as never, "sys", [], undefined)
-const callWithSession = (sessionId: string) => chatViaPi(fakeRegistry as never, fakeModel as never, "sys", [], undefined, undefined, undefined, undefined, sessionId)
+const model = { provider: "test", id: "m", name: "m", cost: { input: 1, output: 1 } }
 
 beforeEach(() => {
-  completeCalls = 0
-  completeImpl = async () => ({ stopReason: "end_turn", content: [] })
-  lastMessages = []
-  lastOptions = {}
+  sessionOpts = null
+  promptCalls = []
+  followUpCalls = []
+  disposed = 0
+  fakeMessages = []
+  autoReadPath = null
 })
 
-test("error-stopReason 'Stream ended' ретраится (2 попытки) и восстанавливается", async () => {
-  let n = 0
-  completeImpl = async () => {
-    n++
-    if (n <= 3) return { stopReason: "error", errorMessage: "Stream ended without finish_reason" }
-    return { stopReason: "end_turn", content: [] }
-  }
-  const turn = await call()
-  expect(turn.stopReason).toBe("end_turn")
-  expect(completeCalls).toBe(4) // initial + 3 retries
+test("runAgent: сессия с нашими тулами (без системных), prompt, вердикт, dispose", async () => {
+  fakeMessages = [{ role: "assistant", content: [{ type: "text", text: '{"context":"FULL","findings":[]}' }] }]
+  const res = await runAgent(model, "review prompt", process.cwd())
+  expect(res.text).toBe('{"context":"FULL","findings":[]}')
+  expect(promptCalls).toEqual(["Review the files in scope and output your verdict."])
+  // Только наши тулы — никаких read/bash/edit/write.
+  expect(sessionOpts.tools).toEqual(["read_file"])
+  expect(sessionOpts.customTools.map((t: any) => t.name)).toEqual(["read_file"])
+  expect(sessionOpts.noTools).toBeUndefined()
+  expect(disposed).toBe(1)
+  expect(followUpCalls).toHaveLength(0)
 })
 
-test("error-stopReason 'Request timed out.' тоже retryable и ретраится", async () => {
-  let n = 0
-  completeImpl = async () => {
-    n++
-    if (n === 1) return { stopReason: "error", errorMessage: "Request timed out." }
-    return { stopReason: "end_turn", content: [] }
-  }
-  const turn = await call()
-  expect(turn.stopReason).toBe("end_turn")
-  expect(completeCalls).toBe(2) // initial + 1 retry
+test("runAgent simplify: получает и search_files", async () => {
+  fakeMessages = [{ role: "assistant", content: [{ type: "text", text: '{"context":"FULL","findings":[]}' }] }]
+  await runAgent(model, "review prompt", process.cwd(), undefined, { search: true })
+  expect(sessionOpts.tools.sort()).toEqual(["read_file", "search_files"])
 })
 
-test("5xx upstream error ('fetch failed') ретраится", async () => {
-  completeImpl = async () => ({ stopReason: "error", errorMessage: '502: {"message":"upstream error: TypeError: fetch failed"}' })
-  await expect(call()).rejects.toThrow(/fetch failed/)
-  expect(completeCalls).toBe(4) // initial + 3 retries, потом падение
+test("runAgent: проза без вердикта → followUp, текст из ответа на него", async () => {
+  fakeMessages = [{ role: "assistant", content: [{ type: "text", text: "I reviewed the code and it looks fine." }] }]
+  const res = await runAgent(model, "review prompt", process.cwd())
+  expect(followUpCalls).toHaveLength(1)
+  expect(res.text).toBe('{"context":"FULL","findings":[]}')
 })
 
-test("исчерпание ретраев error-stopReason → пробрасывается как ошибка", async () => {
-  completeImpl = async () => ({ stopReason: "error", errorMessage: "Stream ended without finish_reason" })
-  await expect(call()).rejects.toThrow(/Stream ended without finish_reason/)
-  expect(completeCalls).toBe(4) // initial + 3 retries, потом падение
-})
-
-test("не-retryable error-stopReason (401) → мгновенный бросок без ретраев", async () => {
-  completeImpl = async () => ({ stopReason: "error", errorMessage: "401 unauthorized" })
-  await expect(call()).rejects.toThrow(/401/)
-  expect(completeCalls).toBe(1)
-})
-
-test("thrown 429 исключение ретраится и восстанавливается", async () => {
-  let n = 0
-  completeImpl = async () => {
-    n++
-    if (n <= 2) throw new Error("429 rate limit exceeded")
-    return { stopReason: "end_turn", content: [] }
-  }
-  const turn = await call()
-  expect(turn.stopReason).toBe("end_turn")
-  expect(completeCalls).toBe(3) // initial + 2 retries
-})
-
-test("thrown не-retryable исключение → без ретраев", async () => {
-  completeImpl = async () => {
-    throw new Error("boom")
-  }
-  await expect(call()).rejects.toThrow(/boom/)
-  expect(completeCalls).toBe(1)
-})
-
-test("runAgent: пустой вердикт → ретрай продолжает ту же беседу (нодж, без рестарта)", async () => {
-  const { mkdtemp, writeFile, rm } = await import("node:fs/promises")
-  const { tmpdir } = await import("node:os")
-  const { join } = await import("node:path")
-  const dir = await mkdtemp(join(tmpdir(), "ur-continue-"))
+test("runAgent: read_file тул ходит в песочницу, прочитанные пути попадают в результат", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ur-sess-"))
   try {
-    await writeFile(join(dir, "a.py"), "x = 1\n")
-    const verdict = '{"context":"FULL","findings":[]}'
-    let n = 0
-    completeImpl = async () => {
-      n++
-      if (n === 1) {
-        // maxIterations=1 → isLast сразу: модель просит тул → пусто.
-        const content = [{ type: "toolCall", id: "call-1", name: "read_file", arguments: { path: "a.py" } }]
-        return { stopReason: "toolUse", content, assistantMessage: { role: "assistant", content } }
-      }
-      if (n === 2) {
-        // Нодж №1 (no-tools): модель снова пишет тул-разметку текстом.
-        return { stopReason: "text", content: [{ type: "text", text: '<tool_calls>\n<invoke name="read_file">' }], assistantMessage: { role: "assistant", content: [{ type: "text", text: '<tool_calls>' }] } }
-      }
-      if (n === 3) {
-        // Нодж №2 (JSON-шаблон): всё ещё разметка → retryOnEmpty продолжает беседу.
-        return { stopReason: "text", content: [{ type: "text", text: '<tool_calls>\n<invoke name="read_file">' }], assistantMessage: { role: "assistant", content: [{ type: "text", text: '<tool_calls>' }] } }
-      }
-      // Ретрай: та же история (с toolResult и ноджами) → вердикт.
-      return { stopReason: "end_turn", content: [{ type: "text", text: verdict }], assistantMessage: { role: "assistant", content: [{ type: "text", text: verdict }] } }
-    }
+    mkdirSync(join(root, "src"), { recursive: true })
+    writeFileSync(join(root, "src", "a.ts"), "const a = 1\n")
+    mkdirSync(join(root, "node_modules", "pkg"), { recursive: true })
+    writeFileSync(join(root, "node_modules", "pkg", "x.js"), "x\n")
+    fakeMessages = [{ role: "assistant", content: [{ type: "text", text: '{"context":"FULL","findings":[]}' }] }]
 
-    const res = await runAgent(fakeRegistry as never, fakeModel as never, "sys", dir, undefined, { maxIterations: 1, maxToolCalls: 10 })
-    expect(res.text).toBe(verdict)
-    expect(n).toBe(4)
-    const history = JSON.stringify(lastMessages)
-    expect(history).toContain("call-1") // toolResult первой попытки в истории
-    expect(history).toContain("previous response was empty") // ретрай-нодж в ту же беседу
+    // Модель читает обычный файл — путь записан в результат.
+    autoReadPath = "src/a.ts"
+    const res = await runAgent(model, "review prompt", root)
+    expect(res.readFiles).toEqual(["src/a.ts"])
+
+    // Модель пытается прочитать заблокированный — путь НЕ записан, тул вернул ошибку.
+    autoReadPath = "node_modules/pkg/x.js"
+    const res2 = await runAgent(model, "review prompt", root)
+    expect(res2.readFiles).toEqual([])
+
+    const readTool = sessionOpts.customTools.find((t: any) => t.name === "read_file")
+    const blocked = await readTool.execute("id", { path: "node_modules/pkg/x.js" })
+    expect(blocked.content[0].text).toContain("blocked")
   } finally {
-    await rm(dir, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true })
   }
 })
 
-test("runAgent: проза без JSON-контракта → ретрай до вердикта", async () => {
-  const { mkdtemp, writeFile, rm } = await import("node:fs/promises")
-  const { tmpdir } = await import("node:os")
-  const { join } = await import("node:path")
-  const dir = await mkdtemp(join(tmpdir(), "ur-prose-"))
-  try {
-    await writeFile(join(dir, "a.py"), "x = 1\n")
-    const verdict = '{"context":"FULL","findings":[]}'
-    let n = 0
-    completeImpl = async () => {
-      n++
-      if (n === 1) {
-        // Модель ответила рассуждением без JSON-контракта (нет "findings").
-        const text = "I reviewed the code and it looks fine overall."
-        return { stopReason: "end_turn", content: [{ type: "text", text }], assistantMessage: { role: "assistant", content: [{ type: "text", text }] } }
-      }
-      return { stopReason: "end_turn", content: [{ type: "text", text: verdict }], assistantMessage: { role: "assistant", content: [{ type: "text", text: verdict }] } }
-    }
-    const res = await runAgent(fakeRegistry as never, fakeModel as never, "sys", dir, undefined, { maxIterations: 2, maxToolCalls: 10 })
-    expect(res.text).toBe(verdict)
-    expect(n).toBe(2)
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-
-test("runAgent: вердикт пишется прямо, без submit_review", async () => {
-  const { mkdtemp, writeFile, rm } = await import("node:fs/promises")
-  const { tmpdir } = await import("node:os")
-  const { join } = await import("node:path")
-  const dir = await mkdtemp(join(tmpdir(), "ur-plain-"))
-  try {
-    await writeFile(join(dir, "a.py"), "def f():\n    return undefined_var\n")
-
-    const verdict = '{"context":"FULL","findings":[{"severity":"critical","category":"logic","file":"a.py","line":2,"lineEnd":null,"title":"t","description":"d","evidence":"e"}]}'
-    let n = 0
-    completeImpl = async () => {
-      n++
-      if (n === 1) {
-        // Структурный read_file — цикл исполняет чтение.
-        const content = [{ type: "toolCall", id: "call-1", name: "read_file", arguments: { path: "a.py" } }]
-        return { stopReason: "toolUse", content, assistantMessage: { role: "assistant", content } }
-      }
-      // Модель отвечает JSON-вердиктом напрямую.
-      return { stopReason: "end_turn", content: [{ type: "text", text: verdict }], assistantMessage: { role: "assistant", content: [{ type: "text", text: verdict }] } }
-    }
-
-    const res = await runAgent(fakeRegistry as never, fakeModel as never, "sys", dir, undefined, { maxIterations: 3, maxToolCalls: 10 })
-    expect(res.text).toBe(verdict)
-    expect(n).toBe(2) // чтение + вердикт, без нуджей и фолбэков
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-
-// ─────────────────────────────────────────────────────────────────────────────
-// judgeViaPi: свежий no-tools вызов судьи без спирали чтения. Возвращает текст
-// JSON-вердикта; на пусто/тул-разметку повторяет попытку.
-// ─────────────────────────────────────────────────────────────────────────────
-
-test("chatViaPi: 400 'reasoning_effort unsupported' → деградация без него", async () => {
-  let n = 0
-  completeImpl = async () => {
-    n++
-    if (n === 1) throw new Error("400: reasoning_effort unsupported")
-    return { stopReason: "end_turn", content: [] }
-  }
-  const turn = await chatViaPi(fakeRegistry as never, fakeModel as never, "sys", [], undefined, undefined, undefined, "max", "sess-1")
-  expect(turn.stopReason).toBe("end_turn")
-  expect(n).toBe(2)
-  expect(lastOptions.reasoningEffort).toBeUndefined() // деградировали
-  expect(lastOptions.sessionId).toBe("sess-1") // session остался на шаге 2
-})
-
-test("chatViaPi: не-параметровая 401 без деградации (мгновенный бросок)", async () => {
-  completeImpl = async () => {
-    throw new Error("401 unauthorized")
-  }
-  await expect(chatViaPi(fakeRegistry as never, fakeModel as never, "sys", [], undefined)).rejects.toThrow(/401/)
-  expect(completeCalls).toBe(1)
-})
-
-test("runAgent: проза С упоминанием 'findings' → ретрай до вердикта (строгий гейт)", async () => {
-  const { mkdtemp, writeFile, rm } = await import("node:fs/promises")
-  const { tmpdir } = await import("node:os")
-  const { join } = await import("node:path")
-  const dir = await mkdtemp(join(tmpdir(), "ur-gate-"))
-  try {
-    await writeFile(join(dir, "a.py"), "x = 1\n")
-    const verdict = '{"context":"FULL","findings":[]}'
-    let n = 0
-    completeImpl = async () => {
-      n++
-      if (n === 1) {
-        // Проза с упоминанием слова "findings" — не вердикт, гейт должен пропустить в ретрай.
-        const text = "I reviewed the code; the findings are all minor."
-        return { stopReason: "end_turn", content: [{ type: "text", text }], assistantMessage: { role: "assistant", content: [{ type: "text", text }] } }
-      }
-      return { stopReason: "end_turn", content: [{ type: "text", text: verdict }], assistantMessage: { role: "assistant", content: [{ type: "text", text: verdict }] } }
-    }
-    const res = await runAgent(fakeRegistry as never, fakeModel as never, "sys", dir, undefined, { maxIterations: 2, maxToolCalls: 10 })
-    expect(res.text).toBe(verdict)
-    expect(n).toBe(2)
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-
-test("sessionId прокидывается в options complete (один id на прогон ревью)", async () => {
-  await callWithSession("sess-abc")
-  expect(lastOptions.sessionId).toBe("sess-abc")
-})
-
-test("chatViaPi без sessionId не шлёт его", async () => {
-  await call()
-  expect(lastOptions.sessionId).toBeUndefined()
-})
-
-test("judgeViaPi возвращает JSON-вердикт судьи", async () => {
-  const json = '{"verdicts":[{"idx":1,"verdict":"VALID","duplicate_of":null,"new_severity":null,"rationale":"ok"}],"summary":{"valid":1},"kept":[1]}'
-  completeImpl = async () => ({ stopReason: "end_turn", content: [{ type: "text", text: json }] })
-  const { judgeViaPi } = await import("./pi-call.ts")
-  const out = await judgeViaPi(fakeRegistry as never, fakeModel as never, "judge prompt")
-  expect(out.text).toBe(json)
-  expect(completeCalls).toBe(1)
-})
-
-test("judgeViaPi: не-abort ошибка провайдера пробрасывается (не глотается)", async () => {
-  completeImpl = async () => {
-    throw new Error("401 unauthorized")
-  }
-  const { judgeViaPi } = await import("./pi-call.ts")
-  await expect(judgeViaPi(fakeRegistry as never, fakeModel as never, "judge prompt")).rejects.toThrow(/401/)
-  expect(completeCalls).toBe(2) // обе попытки, потом бросок
-})
-
-test("judgeViaPi: пустой ответ → повтор, потом вердикт", async () => {
-  const json = '{"verdicts":[{"idx":1,"verdict":"VALID","duplicate_of":null,"new_severity":null,"rationale":"ok"}],"summary":{"valid":1},"kept":[1]}'
-  let n = 0
-  completeImpl = async () => {
-    n++
-    if (n === 1) return { stopReason: "end_turn", content: [] }
-    return { stopReason: "end_turn", content: [{ type: "text", text: json }] }
-  }
-  const { judgeViaPi } = await import("./pi-call.ts")
-  const out = await judgeViaPi(fakeRegistry as never, fakeModel as never, "judge prompt")
-  expect(out.text).toBe(json)
-  expect(completeCalls).toBe(2) // пусто → повтор
+test("judgeViaPi: без тулов (noTools all), промпт судьи, текст из сообщений", async () => {
+  fakeMessages = [{ role: "assistant", content: [{ type: "text", text: '{"verdicts":[]}' }] }]
+  const out = await judgeViaPi(model, "judge prompt")
+  expect(out.text).toBe('{"verdicts":[]}')
+  expect(sessionOpts.noTools).toBe("all")
+  expect(promptCalls).toEqual(["Emit your JSON verdict now — exactly the schema from the prompt."])
+  expect(disposed).toBe(1)
 })

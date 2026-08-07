@@ -1,24 +1,23 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { randomUUID } from "node:crypto"
 import { Type } from "@sinclair/typebox"
 import { SPECIALIZATIONS } from "./constants.ts"
 import { executeReview } from "./engine.ts"
 import { getScopes, resolveScope } from "./scopes.ts"
-import { agentOptionsForSpec, judgeViaPi, runAgent } from "./pi-call.ts"
-import { parseModelKey, type PiModelLike, type PiRegistryLike, type SpecId, type UiLike } from "./types.ts"
+import { judgeViaPi, runAgent } from "./pi-call.ts"
+import { parseModelKey, type PiModelLike, type SpecId, type UiLike } from "./types.ts"
 import { runWizard } from "./wizard.ts"
 
 /**
  * Общий билдер deps ревью (диспатч judge/runAgent) для tool и command хендлеров.
  * Раньше — два идентичных замыкания, менять нужно было в обоих местах.
  */
-function makeReviewDeps(ctx: { ui: UiLike; modelRegistry: PiRegistryLike; cwd: string }, sessionId: string) {
+function makeReviewDeps(ctx: { ui: UiLike; cwd: string }) {
   return {
     ui: ctx.ui,
     callModel: (m: PiModelLike, p: string, specId: string, s?: AbortSignal) =>
       specId === "judge"
-        ? judgeViaPi(ctx.modelRegistry, m, p, s, 2, sessionId)
-        : runAgent(ctx.modelRegistry, m, p, ctx.cwd, s, agentOptionsForSpec(specId), sessionId),
+        ? judgeViaPi(m, p, s)
+        : runAgent(m, p, ctx.cwd, s, { search: specId === "simplify" }),
   }
 }
 
@@ -40,8 +39,9 @@ export default function (pi: ExtensionAPI) {
       try {
         const scopes = getScopes(ctx.cwd)
         // Точный id; для семейства branch_vs_* принимаем любой префикс
-        // (например, задокументированный branch_vs_main → branch_vs_origin/main).
-        const scope = resolveScope(scopes, params.scopeId)
+        // (например, задокументированный branch_vs_main → branch_vs_origin/main);
+        // last_N_commits синтезируется на лету (дифф HEAD~N..HEAD).
+        const scope = resolveScope(scopes, params.scopeId, ctx.cwd)
         if (!scope) {
           throw new Error(`Unknown scopeId "${params.scopeId}" — available: ${scopes.map((s) => s.id).join(", ") || "none"}`)
         }
@@ -56,10 +56,8 @@ export default function (pi: ExtensionAPI) {
         if (specs.length === 0) throw new Error("No valid specIds")
         if (models.length === 0) throw new Error("No valid modelIds")
 
-        // Один session id на прогон ревью: все спеки/модели идут с ним — если
-        // провайдер маршрутизирует по сессии, они попадают на тёплый узел
-        // с разогретым prefix-кэшем (см. chatViaPi).
-        const deps = makeReviewDeps(ctx, randomUUID())
+        // Диспатч judge/runAgent — в makeReviewDeps (единый источник).
+        const deps = makeReviewDeps(ctx)
         const { summary, filename } = await executeReview(deps, ctx.cwd, { scope, specs, models, deep: params.deep, judge: params.judge ?? false }, signal)
         return { content: [{ type: "text", text: `✅ ${summary}\n📋 Report: reviews/${filename}` }], details: { filename } }
       } catch (err) {
@@ -79,7 +77,7 @@ export default function (pi: ExtensionAPI) {
         const cfg = await runWizard(ctx, ctx.cwd)
         ui.notify(`Running ${cfg.deep ? cfg.models.length * cfg.specs.length : cfg.specs.length} parallel reviews...`, "info")
 
-        const deps = makeReviewDeps({ ui, modelRegistry: ctx.modelRegistry, cwd: ctx.cwd }, randomUUID())
+        const deps = makeReviewDeps({ ui, cwd: ctx.cwd })
         const { summary, filename } = await executeReview(deps, ctx.cwd, cfg)
         ui.notify(`✅ ${summary}\n📋 reviews/${filename}`, "success")
       } catch (err) {

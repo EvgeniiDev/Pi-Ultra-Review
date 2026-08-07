@@ -24,13 +24,32 @@ function walkFiles(dir: string, root: string, out: string[]): void {
 /**
  * Резолв scopeId в скоуп: точное совпадение; для семейства branch_vs_*
  * принимаем любой префикс (задокументированный "branch_vs_main" → реальный
- * "branch_vs_origin/main"). Неизвестный id → undefined (fail-fast у вызывающего).
+ * "branch_vs_origin/main"); для last_N_commits синтезируем дифф HEAD~N..HEAD
+ * на лету. Неизвестный id → undefined (fail-fast у вызывающего).
  */
-export function resolveScope(scopes: Scope[], scopeId: string): Scope | undefined {
-  return (
-    scopes.find((s) => s.id === scopeId) ??
-    (scopeId.startsWith("branch_vs_") ? scopes.find((s) => s.id.startsWith("branch_vs_")) : undefined)
-  )
+export function resolveScope(scopes: Scope[], scopeId: string, cwd?: string): Scope | undefined {
+  const exact = scopes.find((s) => s.id === scopeId)
+  if (exact) return exact
+  if (scopeId.startsWith("branch_vs_")) {
+    const b = scopes.find((s) => s.id.startsWith("branch_vs_"))
+    if (b) return b
+  }
+  const m = /^last_(\d+)_commits$/.exec(scopeId)
+  if (m && cwd) {
+    try {
+      const diff = git(`git diff HEAD~${m[1]} HEAD`, cwd)
+      if (diff) {
+        return {
+          id: scopeId,
+          label: `Last ${m[1]} commits`,
+          description: `files changed in the last ${m[1]} commits`,
+          files: extractFiles(diff),
+          diff,
+        }
+      }
+    } catch {}
+  }
+  return undefined
 }
 
 /**

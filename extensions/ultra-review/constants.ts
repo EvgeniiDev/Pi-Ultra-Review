@@ -1,47 +1,23 @@
-import type { Severity, SpecId } from "./types.ts"
+import type { SpecId } from "./types.ts"
 
 // Кап диффа в промпте: 100K символов (~25K токенов) — это 2.5% от 1M контекста
 // deepseek-v4-flash, покрывает нормальные ветки целиком. Дифф — единственный
-// источник «что изменилось» (read_file даёт только текущее состояние), поэтому
-// для ревью изменений он важнее, чем экономия токенов. Кап остаётся только
+// источник «что изменилось» (чтение файлов даёт только текущее состояние),
+// поэтому для ревью изменений он важнее, чем экономия токенов. Кап остаётся
 // страховкой от патологических диффов (5MB уронили бы запрос context-overflow).
-// Обрезка мягкая: по границе строки + список невидимых файлов в промпте.
 export const MAX_DIFF_CHARS = 100_000
 
 /** Версия промтов для отладки/evals: меняй при каждом изменении контракта. */
 export const PROMPT_VERSION = "2026-08-07b.json"
 
 // Параллельность ревью: не больше PROVIDER_MAX_CONCURRENCY одновременных
-// запросов к одному провайдеру и не больше GLOBAL_MAX_CONCURRENCY всего,
-// чтобы не долбить провайдера кучей запросов (rate-limit, socket exhaustion).
+// запросов к одному провайдеру и не больше GLOBAL_MAX_CONCURRENCY всего.
 export const PROVIDER_MAX_CONCURRENCY = 4
 export const GLOBAL_MAX_CONCURRENCY = 10
 
-// Параметры вызова модели.
-// temperature 0.3, а не 0: при 0 DeepSeek-класс модели заметно деградирует.
-export const MODEL_TEMPERATURE = 0.3
-// 64K output-токенов: под max reasoning (REASONING_EFFORT) модель тратит
-// бюджет на мышление — 32K могло обрезать длинную цепочку рассуждений.
-export const MODEL_MAX_TOKENS = 65536
-
-// Уровень reasoning для всех моделей: deepseek-v4-flash (opencode-go)
-// уверенно работает на max, вердикт получается после полного анализа.
+// Глубина «размышлений» модели (thinkingLevel в pi). Токены, температура
+// и ретраи — под управлением агентного рантайма pi, здесь их не задаём.
 export const REASONING_EFFORT = "max"
-
-// Ретрай пустого ответа модели (иногда это временный затуп),
-// задержка растёт линейно: delay, delay*2, ...
-export const EMPTY_RESPONSE_RETRIES = 2
-export const RETRY_DELAY_MS = 1500
-
-// Бюджет агента: единый источник для всех спеков (simplify получает ещё и
-// search_files). Раньше дефолты были раскиданы хардкодом (8/30 в runAgent,
-// 6/30 в runAgentLoop) и уже разошлись. Бюджет кумулятивен на ВСЕ ретраи
-// (см. runAgent: лимиты передаются с учётом уже потраченного).
-export const MAX_AGENT_ITERATIONS = 10
-export const MAX_AGENT_TOOL_CALLS = 40
-
-export const SIMPLIFY_MAX_ITERATIONS = MAX_AGENT_ITERATIONS
-export const SIMPLIFY_MAX_TOOL_CALLS = MAX_AGENT_TOOL_CALLS
 
 export const SPECIALIZATIONS: Record<SpecId, string> = {
   security: "Security (vuln, injection, auth, secrets, OWASP)",

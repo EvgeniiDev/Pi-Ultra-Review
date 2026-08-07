@@ -1,107 +1,69 @@
-import { afterAll, beforeAll, describe, expect, test, mock } from "bun:test"
+import { afterAll, beforeAll, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { BLOCKED_DIRS, readFileSafely } from "./agent.ts"
 
-// pi-call.ts импортирует модули, которые вне рантайма pi не резолвятся, —
-// мокаем до импорта pi-call (тесты ниже используют только makeReadTool).
-mock.module("@earendil-works/pi-ai/compat", () => ({ complete: async () => ({ stopReason: "end_turn", content: [] }) }))
-mock.module("@sinclair/typebox", () => ({ Type: { String: () => ({}), Number: () => ({}), Boolean: () => ({}), Optional: (x: unknown) => x, Array: (x: unknown) => x, Object: (x: unknown) => x } }))
-mock.module("./constants.ts", () => ({
-  EMPTY_RESPONSE_RETRIES: 2,
-  RETRY_DELAY_MS: 1, // в тестах — 1ms вместо 1500ms
-  MODEL_MAX_TOKENS: 8192,
-  MODEL_TEMPERATURE: 0.3,
-  SIMPLIFY_MAX_ITERATIONS: 10,
-  SIMPLIFY_MAX_TOOL_CALLS: 40,
-  MAX_AGENT_ITERATIONS: 10,
-  MAX_AGENT_TOOL_CALLS: 40,
-}))
-
-// Динамический импорт — статические хоистятся и загрузились бы ДО mock.module.
-const { makeExecutor, runAgentLoop } = await import("./agent.ts")
-const { agentOptionsForSpec, makeReadTool, makeSearchTool } = await import("./pi-call.ts")
+// Песочница чтения: путь обязан остаться внутри root, служебные папки
+// заблокированы, симлинки за пределы не выпускаются.
 
 let root: string
+let outsideDir: string
+
 beforeAll(() => {
-  root = mkdtempSync(join(tmpdir(), "ur-exec-"))
+  root = mkdtempSync(join(tmpdir(), "ur-sandbox-"))
   mkdirSync(join(root, "src"), { recursive: true })
-  writeFileSync(join(root, "src", "a.ts"), "const needle = 1\n")
+  writeFileSync(join(root, "src", "a.ts"), "const needle = 1\nconst needle = 2\n")
   mkdirSync(join(root, "node_modules", "pkg"), { recursive: true })
   writeFileSync(join(root, "node_modules", "pkg", "x.js"), "const blocked = 1\n")
-})
-afterAll(() => rmSync(root, { recursive: true, force: true }))
-
-test("makeExecutor records normalized forward-slash paths in readFiles", async () => {
-  const readFiles = new Set<string>()
-  const exec = makeExecutor(root, readFiles)
-  // Backslash-путь (как модель цитирует то, что увидела в ответе read_file на Windows).
-  await exec({ name: "read_file", arguments: { path: "src\\a.ts" } })
-  expect(readFiles.has("src/a.ts")).toBe(true)
-  const ok = await exec({ name: "read_file", arguments: { path: "src/a.ts" } })
-  expect(ok.ok).toBe(true)
+  writeFileSync(join(root, "big.ts"), "needle\n".repeat(15000)) // ~105 КБ > 100 КБ
+  writeFileSync(join(root, "bin.dat"), "needle\u0000binary\n")
+  // Реальный файл ЗА пределами песочницы.
+  outsideDir = mkdtempSync(join(tmpdir(), "ur-outside-"))
+  writeFileSync(join(outsideDir, "secret.txt"), "secret\n")
 })
 
-test("makeExecutor records only successful reads in readFiles", async () => {
-  const readFiles = new Set<string>()
-  const exec = makeExecutor(root, readFiles)
-  // Заблокированный каталог: чтение падает, путь НЕ должен попасть в readFiles —
-  // иначе галлюцинация на .git/config или node_modules/x пройдёт серверную
-  // валидацию находок (файл считается «прочитанным», хотя контента модель не видела).
-  const blocked = await exec({ name: "read_file", arguments: { path: "node_modules/pkg/x.js" } })
-  expect(blocked.ok).toBe(false)
-  expect(readFiles.has("node_modules/pkg/x.js")).toBe(false)
-  const missing = await exec({ name: "read_file", arguments: { path: "nope.ts" } })
-  expect(missing.ok).toBe(false)
-  expect(readFiles.has("nope.ts")).toBe(false)
-  const ok = await exec({ name: "read_file", arguments: { path: "src/a.ts" } })
-  expect(ok.ok).toBe(true)
-  expect(readFiles.has("src/a.ts")).toBe(true)
+afterAll(() => {
+  rmSync(root, { recursive: true, force: true })
+  rmSync(outsideDir, { recursive: true, force: true })
 })
 
-test("makeExecutor rejects unknown tools explicitly", async () => {
-  const readFiles = new Set<string>()
-  const exec = makeExecutor(root, readFiles)
-  const res = await exec({ name: "submit_review", arguments: { verdict: "x" } })
+test("readFileSafely: обычный файл читается с номерами строк", async () => {
+  const res = await readFileSafely(root, "src/a.ts")
+  expect(res.ok).toBe(true)
+  const text = (res as { ok: true; text: string }).text
+  expect(text).toContain("1| const needle = 1")
+  expect(text).toContain("2| const needle = 2")
+})
+
+test("readFileSafely: служебные папки заблокированы", async () => {
+  const res = await readFileSafely(root, "node_modules/pkg/x.js")
   expect(res.ok).toBe(false)
-  expect((res as { ok: false; error: string }).error).toMatch(/unknown tool/)
-  expect(readFiles.size).toBe(0)
+  expect((res as { ok: false; error: string }).error).toMatch(/blocked/)
 })
 
-test("makeExecutor dispatches read_file and search_files by name", async () => {
-  const readFiles = new Set<string>()
-  const exec = makeExecutor(root, readFiles)
-  const r1 = await exec({ name: "read_file", arguments: { path: "src/a.ts" } })
-  expect(r1.ok).toBe(true)
-  expect(readFiles.has("src/a.ts")).toBe(true)
-  const r2 = await exec({ name: "search_files", arguments: { query: "needle", path: "src" } })
-  expect(r2.ok).toBe(true)
-  expect((r2 as { ok: true; text: string }).text).toContain("src/a.ts:1:")
+test("readFileSafely: выход за пределы репозитория отклонён", async () => {
+  const res = await readFileSafely(root, `../${outsideDir.split(/[\\/]/).pop()}/secret.txt`)
+  expect(res.ok).toBe(false)
+  expect((res as { ok: false; error: string }).error).toMatch(/escapes/)
 })
 
-test("runAgentLoop executes search_files through makeExecutor", async () => {
-  const exec = makeExecutor(root, new Set<string>())
-  let n = 0
-  const chat = async () => {
-    n++
-    if (n === 1) {
-      return { assistantMessage: {}, content: [{ type: "toolCall", id: "t1", name: "search_files", arguments: { query: "needle" } }], stopReason: "toolUse" }
-    }
-    return { assistantMessage: {}, content: [{ type: "text", text: "final" }], stopReason: "end_turn" }
+test("readFileSafely: большие и бинарные файлы не читаются", async () => {
+  const big = await readFileSafely(root, "big.ts")
+  expect(big.ok).toBe(false)
+  expect((big as { ok: false; error: string }).error).toMatch(/too large/)
+  const bin = await readFileSafely(root, "bin.dat")
+  expect(bin.ok).toBe(false)
+  expect((bin as { ok: false; error: string }).error).toMatch(/binary/)
+})
+
+test("readFileSafely: несуществующий файл — понятная ошибка", async () => {
+  const res = await readFileSafely(root, "nope.ts")
+  expect(res.ok).toBe(false)
+})
+
+test("BLOCKED_DIRS: единый список песочницы (без дрейфа)", () => {
+  for (const dir of [".git", "node_modules", ".pi", "reviews", ".venv", "__pycache__", "dist", "build"]) {
+    expect(BLOCKED_DIRS.has(dir), dir).toBe(true)
   }
-  const res = await runAgentLoop(chat, [], [makeReadTool(), makeSearchTool()], exec, { maxIterations: 4 })
-  expect(res.text).toBe("final")
-  expect(res.toolCalls).toBe(1)
-})
-
-test("agentOptionsForSpec gives search tool and budget to simplify only", () => {
-  const s = agentOptionsForSpec("simplify")
-  expect(s.extraTools).toHaveLength(1)
-  expect(s.extraTools[0].name).toBe("search_files")
-  expect(s.maxIterations).toBe(10)
-  expect(s.maxToolCalls).toBe(40)
-  const o = agentOptionsForSpec("security")
-  expect(o.extraTools).toEqual([])
-  expect(o.maxIterations).toBe(10)
-  expect(o.maxToolCalls).toBe(40)
 })
