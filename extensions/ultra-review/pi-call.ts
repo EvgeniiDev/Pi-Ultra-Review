@@ -86,35 +86,58 @@ export async function chatViaPi(
     /429|5\d\d|rate\s*limit|stream ended|timed out|timeout|took too long|fetch failed|upstream|socket|econn|enotfound|network/i.test(
       (e as Error).message ?? "",
     )
-  const response = await retryOnFailure(
-    `${model.provider}/${model.id}`,
-    () =>
-      complete(effectiveModel, { systemPrompt, messages: messages as Message[], tools }, {
-        apiKey: auth.apiKey,
-        headers: auth.headers,
-        env: auth.env,
+  // Провайдер отверг параметр (типичные 400: reasoning_effort/max_tokens/
+  // session-заголовки не поддерживаются) — градационная деградация: повторяем
+  // вызов без параметра. deepseek-v4-flash получает max reasoning + session,
+  // несовместимая модель из пула — рабочий вызов без них.
+  const isParamRejected = (e: unknown) =>
+    /reasoning_effort|max_tokens|max_completion_tokens|x-session-id|session-affinity|session_id|unknown parameter|unsupported parameter|invalid parameter|unknown field|400 bad request/i.test(
+      (e as Error).message ?? "",
+    )
+  const degradeSteps = [
+    { maxTokens: maxTokens ?? MODEL_MAX_TOKENS, effort: reasoningEffort, withSession: true },
+    { maxTokens: maxTokens ?? MODEL_MAX_TOKENS, effort: undefined, withSession: true },
+    { maxTokens: Math.min(16384, maxTokens ?? MODEL_MAX_TOKENS), effort: undefined, withSession: false },
+  ]
+  let paramError: unknown
+  for (const step of degradeSteps) {
+    try {
+      const response = await retryOnFailure(
+        `${model.provider}/${model.id}`,
+        () =>
+          complete(effectiveModel, { systemPrompt, messages: messages as Message[], tools }, {
+            apiKey: auth.apiKey,
+            headers: auth.headers,
+            env: auth.env,
+            signal,
+            temperature: MODEL_TEMPERATURE,
+            maxTokens: step.maxTokens,
+            reasoningEffort: step.effort,
+            sessionId: step.withSession ? sessionId : undefined,
+          }).then((r) => {
+            if (r.stopReason === "error" && isRetryable(new Error(r.errorMessage ?? ""))) {
+              throw new Error(`${model.provider}/${model.id} error: ${r.errorMessage}`)
+            }
+            return r
+          }),
+        isRetryable,
+        3,
+        RETRY_DELAY_MS,
         signal,
-        temperature: MODEL_TEMPERATURE,
-        maxTokens: maxTokens ?? MODEL_MAX_TOKENS,
-        reasoningEffort,
-        sessionId,
-      }).then((r) => {
-        if (r.stopReason === "error" && isRetryable(new Error(r.errorMessage ?? ""))) {
-          throw new Error(`${model.provider}/${model.id} error: ${r.errorMessage}`)
-        }
-        return r
-      }),
-    isRetryable,
-    3,
-    RETRY_DELAY_MS,
-    signal,
-  )
+      )
 
-  if (response.stopReason === "aborted") throw new Error(`${model.provider}/${model.id} aborted`)
-  if (response.stopReason === "error") {
-    throw new Error(`${model.provider}/${model.id} error: ${response.errorMessage ?? "unknown"}`)
+      if (response.stopReason === "aborted") throw new Error(`${model.provider}/${model.id} aborted`)
+      if (response.stopReason === "error") {
+        throw new Error(`${model.provider}/${model.id} error: ${response.errorMessage ?? "unknown"}`)
+      }
+      return { assistantMessage: response, content: response.content, stopReason: response.stopReason, errorMessage: response.errorMessage }
+    } catch (e) {
+      if (signal?.aborted) throw e
+      if (!isParamRejected(e)) throw e // не параметр — не деградируем
+      paramError = e
+    }
   }
-  return { assistantMessage: response, content: response.content, stopReason: response.stopReason, errorMessage: response.errorMessage }
+  throw paramError instanceof Error ? paramError : new Error(String(paramError))
 }
 
 export async function judgeViaPi(
@@ -144,6 +167,9 @@ export async function judgeViaPi(
         REASONING_EFFORT,
         sessionId,
       )
+      // Попытка выполнилась без исключения — прошлая ошибка была транзиентной.
+      // Иначе удачная попытка с пустым ответом бросала бы УСТАРЕВШУЮ ошибку.
+      lastError = undefined
       const text = extractText(turn.content)
       if (text) return { text }
     } catch (e) {
@@ -200,11 +226,14 @@ export async function runAgent(
     toolBudget -= loop.toolCalls
     contextBudget -= loop.contextChars
     messages = loop.messages
-    // Не вердикт (тул-разметка, пусто или проза без JSON-контракта) — считаем
-    // пустым, чтобы retryOnEmpty продолжил беседу С тулами: модель дочитает
+    // Вердикт — только цельный JSON-объект с "findings": начинается с "{",
+    // заканчивается "}". Проза с упоминанием слова или битый JSON
+    // ({"context":"FULL","findings": [) через гейт не проходят → ретрай.
+    const isVerdict = /^\{[\s\S]*"findings"[\s\S]*\}$/.test(loop.text.trim())
+    // Не вердикт (тул-разметка, пусто, проза, битый JSON) — считаем пустым,
+    // чтобы retryOnEmpty продолжил беседу С тулами: модель дочитает
     // и выдаст вердикт по контракту.
-    const finalText =
-      isToolMarkup(loop.text) || !loop.text.trim() || !loop.text.includes('"findings"') ? "" : loop.text
+    const finalText = isToolMarkup(loop.text) || !loop.text.trim() || !isVerdict ? "" : loop.text
     if (!finalText.trim()) {
       // Продолжаем ТУ ЖЕ беседу, а не рестартуем: файлы уже прочитаны,
       // контекст накоплен, префикс в кэше провайдера.

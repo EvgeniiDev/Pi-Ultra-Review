@@ -12,7 +12,7 @@ export type ReadResult = { ok: true; text: string } | { ok: false; error: string
 
 /**
  * Единый источник политики песочницы (раньше — три копии в agent/scopes/diagnostic,
- * уже разошлись). scopes.ts и diagnostic.ts импортируют этот список.
+ * уже разошлись). scopes.ts импортирует этот список.
  */
 export const BLOCKED_DIRS = new Set([
   ".git", "node_modules", ".pi", "reviews", "dist", "build", "coverage",
@@ -173,6 +173,9 @@ export async function searchFilesSafely(root: string, query: string, pathFilter?
   }
 
   const walk = async (abs: string, relPath: string) => {
+    // Кап и на обход дерева: рекурсия останавливается, когда файловый бюджет
+    // исчерпан — иначе каждый вызов search_files обходил всё дерево целиком.
+    if (scanned >= maxFiles) return
     // Пропускаем поддеревья, которые не содержат фильтр и не лежат внутри него:
     // идём по пути от root вниз до filterReal, дальше — только внутри filterReal.
     if (filterReal && abs !== filterReal && !filterReal.startsWith(abs + "/") && !filterReal.startsWith(abs + "\\") && !abs.startsWith(filterReal + "/") && !abs.startsWith(filterReal + "\\")) return
@@ -208,7 +211,8 @@ export async function searchFilesSafely(root: string, query: string, pathFilter?
   }
 
   matches.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : a.line - b.line))
-  const lines = [`search: "${query}" — ${total} match(es)${total > matches.length ? `, showing first ${matches.length}` : ""}`]
+  const capped = scanned >= maxFiles
+  const lines = [`search: "${query}" — ${total} match(es)${total > matches.length ? `, showing first ${matches.length}` : ""}${capped ? ` (scan capped at ${maxFiles} files, results may be partial)` : ""}`]
   for (const m of matches) {
     const line = `${m.path}:${m.line}: ${m.snippet}`
     if (lines.join("\n").length + line.length + 1 > MAX_SEARCH_RESULT_CHARS) break
@@ -387,6 +391,7 @@ export async function runAgentLoop(
   const messages = [...initialMessages]
   let toolCalls = 0
   let contextChars = 0
+  let callsMade = 0
   let forceFinish = false
   let text = ""
 
@@ -394,16 +399,18 @@ export async function runAgentLoop(
     // Последняя итерация (или исчерпанный бюджет) — без тулов: модель обязана ответить.
     const isLast = iteration === maxIterations - 1 || forceFinish
     const turn = await chat(messages, isLast ? [] : tools, signal)
+    callsMade++
     const calls = extractToolCalls(turn.content)
     const textPart = extractText(turn.content)
     if (textPart) text = textPart
 
     if (calls.length === 0) {
       const answer = textPart || text
-      // Не вердикт (пусто/тул-разметка/проза без контракта) — не выходим
-      // здесь: уходим в финальные ноджи, где текст можно заменить на JSON.
+      // Пусто/тул-разметка — не ответ: уходим в финальные ноджи. Проза без
+      // контракта (без "findings") возвращается как есть — её поймает
+      // вердикт-гейт runAgent и отправит на ретрай С тулами (сильнее ноджа).
       if (answer.trim() && !isToolMarkup(answer)) {
-        return { text: answer, iterations: iteration + 1, toolCalls, contextChars, messages }
+        return { text: answer, iterations: callsMade, toolCalls, contextChars, messages }
       }
       break
     }
@@ -458,6 +465,7 @@ export async function runAgentLoop(
         [],
         signal,
       )
+      callsMade++
       const verdict = extractText(nudge.content)
       if (verdict && !isToolMarkup(verdict) && verdict.includes('"findings"')) {
         text = verdict
@@ -465,5 +473,8 @@ export async function runAgentLoop(
       }
     }
   }
-  return { text, iterations: maxIterations, toolCalls, contextChars, messages }
+  // iterations = ФАКТИЧЕСКОЕ число вызовов chat (цикл + ноджи), а не maxIterations:
+  // ранний break/нодж-путь иначе «фантомно» списывал весь бюджет ретрая
+  // (runAgent вычитал 10 вместо 1) и следующий ретрай оставался без тулов.
+  return { text, iterations: callsMade, toolCalls, contextChars, messages }
 }

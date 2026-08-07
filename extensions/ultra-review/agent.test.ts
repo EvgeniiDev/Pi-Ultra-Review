@@ -296,11 +296,14 @@ test("empty response with no calls goes through the nudge, not early return", as
     [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
     [],
     executor,
-    { maxIterations: 2, maxToolCalls: 10 },
+    { maxIterations: 5, maxToolCalls: 10 },
     undefined,
   )
   expect(res.text).toBe('{"context":"FULL","findings":[]}')
   expect(calls).toBe(2)
+  // Фактические вызовы chat (1 итерация + 1 нодж), а не maxIterations=5:
+  // иначе ретрай-бюджет списывался бы фантомно (см. догфуд-находку #1).
+  expect(res.iterations).toBe(2)
 })
 
 test("structured read_file calls are executed, then the verdict text is returned", async () => {

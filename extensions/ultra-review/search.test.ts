@@ -72,9 +72,11 @@ test("searchFilesSafely respects the scan budget (maxFiles)", async () => {
   const res = await searchFilesSafely(root, "needle", undefined, 0)
   expect(res.ok).toBe(true)
   expect((res as { ok: true; text: string }).text).toContain("0 match(es)")
-  // Бюджет 1: максимум один файл просканирован.
+  // Бюджет 1: максимум один файл просканирован + пометка о неполном покрытии.
   const one = await searchFilesSafely(root, "needle", undefined, 1)
-  expect((one as { ok: true; text: string }).text).toMatch(/^search: "needle" — \d+ match\(es\)/)
+  const text = (one as { ok: true; text: string }).text
+  expect(text).toMatch(/^search: "needle" — \d+ match\(es\)/)
+  expect(text).toContain("scan capped at 1 files")
 })
 
 test("rejects empty query and path escapes", async () => {

@@ -221,6 +221,54 @@ test("runAgent: вердикт пишется прямо, без submit_review",
 // JSON-вердикта; на пусто/тул-разметку повторяет попытку.
 // ─────────────────────────────────────────────────────────────────────────────
 
+test("chatViaPi: 400 'reasoning_effort unsupported' → деградация без него", async () => {
+  let n = 0
+  completeImpl = async () => {
+    n++
+    if (n === 1) throw new Error("400: reasoning_effort unsupported")
+    return { stopReason: "end_turn", content: [] }
+  }
+  const turn = await chatViaPi(fakeRegistry as never, fakeModel as never, "sys", [], undefined, undefined, undefined, "max", "sess-1")
+  expect(turn.stopReason).toBe("end_turn")
+  expect(n).toBe(2)
+  expect(lastOptions.reasoningEffort).toBeUndefined() // деградировали
+  expect(lastOptions.sessionId).toBe("sess-1") // session остался на шаге 2
+})
+
+test("chatViaPi: не-параметровая 401 без деградации (мгновенный бросок)", async () => {
+  completeImpl = async () => {
+    throw new Error("401 unauthorized")
+  }
+  await expect(chatViaPi(fakeRegistry as never, fakeModel as never, "sys", [], undefined)).rejects.toThrow(/401/)
+  expect(completeCalls).toBe(1)
+})
+
+test("runAgent: проза С упоминанием 'findings' → ретрай до вердикта (строгий гейт)", async () => {
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises")
+  const { tmpdir } = await import("node:os")
+  const { join } = await import("node:path")
+  const dir = await mkdtemp(join(tmpdir(), "ur-gate-"))
+  try {
+    await writeFile(join(dir, "a.py"), "x = 1\n")
+    const verdict = '{"context":"FULL","findings":[]}'
+    let n = 0
+    completeImpl = async () => {
+      n++
+      if (n === 1) {
+        // Проза с упоминанием слова "findings" — не вердикт, гейт должен пропустить в ретрай.
+        const text = "I reviewed the code; the findings are all minor."
+        return { stopReason: "end_turn", content: [{ type: "text", text }], assistantMessage: { role: "assistant", content: [{ type: "text", text }] } }
+      }
+      return { stopReason: "end_turn", content: [{ type: "text", text: verdict }], assistantMessage: { role: "assistant", content: [{ type: "text", text: verdict }] } }
+    }
+    const res = await runAgent(fakeRegistry as never, fakeModel as never, "sys", dir, undefined, { maxIterations: 2, maxToolCalls: 10 })
+    expect(res.text).toBe(verdict)
+    expect(n).toBe(2)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test("sessionId прокидывается в options complete (один id на прогон ревью)", async () => {
   await callWithSession("sess-abc")
   expect(lastOptions.sessionId).toBe("sess-abc")

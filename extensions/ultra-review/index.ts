@@ -5,8 +5,22 @@ import { SPECIALIZATIONS } from "./constants.ts"
 import { executeReview } from "./engine.ts"
 import { getScopes, resolveScope } from "./scopes.ts"
 import { agentOptionsForSpec, judgeViaPi, runAgent } from "./pi-call.ts"
-import { parseModelKey, type PiModelLike, type SpecId, type UiLike } from "./types.ts"
+import { parseModelKey, type PiModelLike, type PiRegistryLike, type SpecId, type UiLike } from "./types.ts"
 import { runWizard } from "./wizard.ts"
+
+/**
+ * Общий билдер deps ревью (диспатч judge/runAgent) для tool и command хендлеров.
+ * Раньше — два идентичных замыкания, менять нужно было в обоих местах.
+ */
+function makeReviewDeps(ctx: { ui: UiLike; modelRegistry: PiRegistryLike; cwd: string }, sessionId: string) {
+  return {
+    ui: ctx.ui,
+    callModel: (m: PiModelLike, p: string, specId: string, s?: AbortSignal) =>
+      specId === "judge"
+        ? judgeViaPi(ctx.modelRegistry, m, p, s, 2, sessionId)
+        : runAgent(ctx.modelRegistry, m, p, ctx.cwd, s, agentOptionsForSpec(specId), sessionId),
+  }
+}
 
 const toolSchema = Type.Object({
   scopeId: Type.String({ description: "Scope ID: working_tree, current_dir, branch_vs_<base> (e.g. branch_vs_origin/main), last_commit. Prefix branch_vs_ matches the branch scope." }),
@@ -45,14 +59,7 @@ export default function (pi: ExtensionAPI) {
         // Один session id на прогон ревью: все спеки/модели идут с ним — если
         // провайдер маршрутизирует по сессии, они попадают на тёплый узел
         // с разогретым prefix-кэшем (см. chatViaPi).
-        const sessionId = randomUUID()
-        const deps = {
-          ui: ctx.ui,
-          callModel: (m: PiModelLike, p: string, specId: string, s?: AbortSignal) =>
-            specId === "judge"
-              ? judgeViaPi(ctx.modelRegistry, m, p, s, 2, sessionId)
-              : runAgent(ctx.modelRegistry, m, p, ctx.cwd, s, agentOptionsForSpec(specId), sessionId),
-        }
+        const deps = makeReviewDeps(ctx, randomUUID())
         const { summary, filename } = await executeReview(deps, ctx.cwd, { scope, specs, models, deep: params.deep, judge: params.judge ?? false }, signal)
         return { content: [{ type: "text", text: `✅ ${summary}\n📋 Report: reviews/${filename}` }], details: { filename } }
       } catch (err) {
@@ -72,14 +79,7 @@ export default function (pi: ExtensionAPI) {
         const cfg = await runWizard(ctx, ctx.cwd)
         ui.notify(`Running ${cfg.deep ? cfg.models.length * cfg.specs.length : cfg.specs.length} parallel reviews...`, "info")
 
-        const sessionId = randomUUID()
-        const deps = {
-          ui,
-          callModel: (m: PiModelLike, p: string, specId: string, s?: AbortSignal) =>
-            specId === "judge"
-              ? judgeViaPi(ctx.modelRegistry, m, p, s, 2, sessionId)
-              : runAgent(ctx.modelRegistry, m, p, ctx.cwd, s, agentOptionsForSpec(specId), sessionId),
-        }
+        const deps = makeReviewDeps({ ui, modelRegistry: ctx.modelRegistry, cwd: ctx.cwd }, randomUUID())
         const { summary, filename } = await executeReview(deps, ctx.cwd, cfg)
         ui.notify(`✅ ${summary}\n📋 reviews/${filename}`, "success")
       } catch (err) {
