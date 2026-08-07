@@ -37,6 +37,7 @@ export interface ValidatedFinding {
   impact?: string
   fix?: string
   evidence?: string
+  rule?: string
   risk?: SimplifyRisk
   action?: SimplifyAction
   reuseTarget?: string
@@ -115,6 +116,7 @@ interface JsonFinding {
   impact?: unknown
   fix?: unknown
   evidence?: unknown
+  rule?: unknown
   risk?: unknown
   action?: unknown
   reuseTarget?: unknown
@@ -255,6 +257,13 @@ export function processTaskOutput(output: string, specId: string, scopeFiles: Se
     }
 
     const finalSev = allowed.has(sev as Severity) ? (sev as Severity) : maxAllowed
+    // HIGH/CRITICAL обязаны иметь rule: находка без указанного правила — мусор
+    // (заглушка-блокер без обоснования). LOW/MEDIUM могут обходиться без rule.
+    const rule = typeof f.rule === "string" ? f.rule.trim() : ""
+    if ((finalSev === "HIGH" || finalSev === "CRITICAL") && !rule) {
+      rejectedCount++
+      continue
+    }
     findings.push({
       severity: finalSev,
       category: typeof f.category === "string" ? f.category : undefined,
@@ -267,6 +276,7 @@ export function processTaskOutput(output: string, specId: string, scopeFiles: Se
       impact: typeof f.impact === "string" ? f.impact : undefined,
       fix: typeof f.fix === "string" ? f.fix : undefined,
       evidence: typeof f.evidence === "string" ? f.evidence : undefined,
+      rule: rule || undefined,
       risk,
       action,
       reuseTarget,

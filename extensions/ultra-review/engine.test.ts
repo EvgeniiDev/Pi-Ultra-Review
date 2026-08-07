@@ -27,6 +27,27 @@ test("simplify: missing or invalid risk/action rejected", () => {
   expect(r2.rejectedCount).toBe(1)
 })
 
+test("HIGH finding without rule is rejected (rule required for blockers)", () => {
+  const out = `{"context":"FULL","findings":[{"severity":"HIGH","file":"src/a.ts","line":1,"title":"injection"}]}`
+  const r = processTaskOutput(out, "security", scopeFiles, readFiles)
+  expect(r.findings).toHaveLength(0)
+  expect(r.rejectedCount).toBe(1)
+})
+
+test("HIGH finding with rule passes through", () => {
+  const out = `{"context":"FULL","findings":[{"severity":"HIGH","file":"src/a.ts","line":1,"title":"injection","rule":"sql_injection"}]}`
+  const r = processTaskOutput(out, "security", scopeFiles, readFiles)
+  expect(r.findings).toHaveLength(1)
+  expect(r.findings[0].rule).toBe("sql_injection")
+})
+
+test("CRITICAL without rule rejected, LOW without rule kept", () => {
+  const critical = processTaskOutput(`{"context":"FULL","findings":[{"severity":"CRITICAL","file":"src/a.ts","line":1,"title":"x"}]}`, "test_integrity", scopeFiles, readFiles)
+  expect(critical.rejectedCount).toBe(1)
+  const low = processTaskOutput(`{"context":"FULL","findings":[{"severity":"LOW","file":"src/a.ts","line":1,"title":"x"}]}`, "security", scopeFiles, readFiles)
+  expect(low.findings).toHaveLength(1)
+})
+
 test("security: risk/action fields ignored, finding kept without them", () => {
   const out = `{"findings":[{"severity":"MEDIUM","file":"src/a.ts","line":1,"title":"x","risk":"safe","action":"delete"}]}`
   const r = processTaskOutput(out, "security", scopeFiles, readFiles)
@@ -223,7 +244,7 @@ test("judge DOWNGRADE with invalid new_severity keeps the original severity", as
         }
       }
       return {
-        text: '{"context":"FULL","findings":[{"severity":"HIGH","file":"src/a.ts","line":1,"title":"injection"}]}',
+        text: '{"context":"FULL","findings":[{"severity":"HIGH","file":"src/a.ts","line":1,"title":"injection","rule":"sql_injection"}]}',
         toolCalls: 1,
         readFiles: ["src/a.ts"],
       }

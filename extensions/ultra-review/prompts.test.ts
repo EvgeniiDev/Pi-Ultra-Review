@@ -49,6 +49,12 @@ test("shared prefix precedes spec-specific sections (prefix-cache friendly)", ()
   expect(prefixS).not.toContain("# SPECIALIST SCOPE")
 })
 
+test("output contract documents the rule field", () => {
+  const p = buildPrompt(scope, "security")
+  expect(p).toContain('"rule": "string"')
+  expect(p).toContain("REQUIRED for HIGH and CRITICAL findings")
+})
+
 test("simplify prompt documents two tools (read_file + search_files)", () => {
   const p = buildPrompt(scope, "simplify")
   expect(p).toContain("You have two tools:")

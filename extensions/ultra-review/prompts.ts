@@ -692,7 +692,8 @@ Schema:
       "trigger": "string",
       "impact": "string",
       "fix": "string",
-      "evidence": "string"${specId === "simplify"
+      "evidence": "string",
+      "rule": "string"${specId === "simplify"
         ? `,
       "risk": "safe | confirm | review",
       "action": "delete | inline | refactor | parallelize",
@@ -725,6 +726,9 @@ ${specId === "simplify"
 - side: "new" | "old".
 - evidence: a short verbatim quote from the code you read (or the diff). Use
   [REDACTED] for anything secret.
+- rule: the heuristic or rule violated (e.g. cqs, cyclomatic>15, test_weakened,
+  parse-don't-validate, n_plus_one). REQUIRED for HIGH and CRITICAL findings;
+  optional for LOW/MEDIUM. Omit if no specific rule applies.
 - title: one sentence. trigger/impact/fix: concise, concrete.
 
 Gates (apply before including a finding):
@@ -763,6 +767,7 @@ export interface JudgeFindingInput {
   impact?: string
   fix?: string
   evidence?: string
+  rule?: string
   risk?: string
   action?: string
   agent: string
@@ -778,7 +783,7 @@ export function buildJudgePrompt(scope: { files: string[]; diff?: string }, find
   const findingsText = findings
     .map(
       (f) =>
-        `${f.idx}. [${f.severity}] ${f.file}:${f.line}${f.lineEnd && f.lineEnd !== f.line ? `-${f.lineEnd}` : ""} (${f.side ?? "new"}) — ${f.title}${f.trigger ? ` | trigger: ${f.trigger}` : ""}${f.evidence ? ` | evidence: ${f.evidence}` : ""}${f.risk && f.action ? ` | risk: ${f.risk}, action: ${f.action}` : ""} (agent: ${f.agent}, spec: ${f.spec})`,
+        `${f.idx}. [${f.severity}] ${f.file}:${f.line}${f.lineEnd && f.lineEnd !== f.line ? `-${f.lineEnd}` : ""} (${f.side ?? "new"}) — ${f.title}${f.trigger ? ` | trigger: ${f.trigger}` : ""}${f.evidence ? ` | evidence: ${f.evidence}` : ""}${f.rule ? ` | rule: ${f.rule}` : ""}${f.risk && f.action ? ` | risk: ${f.risk}, action: ${f.action}` : ""} (agent: ${f.agent}, spec: ${f.spec})`,
     )
     .join("\n")
 
