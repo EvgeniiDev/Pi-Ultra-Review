@@ -267,6 +267,68 @@ export const REVIEW_SPECS: Record<SpecId, ReviewSpec> = {
     ],
     allowedSeverities: ["LOW", "MEDIUM", "HIGH"],
   },
+
+  test_integrity: {
+    role: "senior engineer specializing in test and verification integrity",
+    mission:
+      "Verify that the change's tests and verification gates are trustworthy: meaningful for the new behavior, not weakened to get green, and independent of the implementation.",
+    investigate: [
+      "Tests changed, weakened, skipped, or removed merely to make the implementation pass: deleted or relaxed assertions, broadened tolerances, .skip/.only/xit/xdescribe/#[ignore], conditional skips, exact checks converted to loose ones.",
+      "An existing oracle rewritten without a requirement change: a previously meaningful test altered to match the new (possibly wrong) implementation.",
+      "Broad suppressions or disabled checks: eslint-disable/@ts-ignore/type: ignore, commented-out assertions, try/catch swallowing test failures, jest.mock/patch that mocks away the code under test.",
+      "Tautological tests: assertions that mirror the implementation line-for-line and cannot fail independently; tests that only check a call happened, not the outcome.",
+      "Missing coverage for new or changed behavior: a branch, error path, or behavior visible in the diff with no test.",
+      "Flaky patterns: time-based sleeps, random values without seeding, network or file access without isolation, dependence on global state or execution order.",
+      "Assertions that cannot fail: expect(true), missing final assertion, mocks returning fixed values that match the assertion.",
+      "Production code modified only to satisfy tests: parameters, branches, or exports added as test-shaped holes in production code.",
+      "Tests that pass but do not exercise the new logic, e.g. a wrapper that ignores the changed branch.",
+    ],
+    ignore: [
+      "Test style or readability without impact on trustworthiness.",
+      "Test suite performance unless it forces skipping or flakiness.",
+      "Missing tests for pre-existing behavior unrelated to the diff.",
+      "Speculative test requirements not evidenced by the diff.",
+      "Coverage-percentage complaints without a concrete untested behavior at risk.",
+      "Production-code quality issues that belong to another perspective — report only the verification gap.",
+    ],
+    severityGuidance: [
+      "CRITICAL: a gate protecting an irreversible or security-critical operation was disabled, or its oracle removed without replacement; use extremely rarely.",
+      "HIGH: tests or gates weakened to make the change pass; material new behavior with no verification; a rewritten oracle that hides a regression.",
+      "MEDIUM: meaningful behavior verified only weakly, flaky-prone patterns in new tests, or a real coverage gap for an edge case.",
+      "LOW: minor verification hygiene with clear but limited consequence.",
+    ],
+    allowedSeverities: ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+  },
+
+  change_quality: {
+    role: "senior engineer reviewing change-set quality and commit hygiene",
+    mission:
+      "Assess the change set as a whole: is it coherent, well-scoped, free of unrelated or drive-by edits, and does its history or description explain the why?",
+    investigate: [
+      "Coherence: is the change architecturally coherent, or a grab-bag of unrelated edits? Can the change be summarized in one sentence of intent?",
+      "Unrelated changes mixed in: cleanup, formatting, refactors, or dependency bumps bundled inside a behavior change without justification.",
+      "Mechanical vs semantic separation: are generated, mechanical, or formatting edits distinguishable from semantic decisions in the diff?",
+      "Commit hygiene (when history is available): subjects concise and imperative; messages explain non-obvious rationale; commits preserve coherent known-good or recoverable states; no micro-commits that do not build; no drive-by refactors inside behavior commits.",
+      "Missing rationale: behavior changes without explanation; edits made only to make tests pass without a stated requirement change.",
+      "Incompleteness: half-migrated code, TODOs without owners and exit conditions, dead paths left behind, commented-out code in the diff.",
+      "Dependency changes without justification: new dependency, version bump, or lockfile churn with no stated reason.",
+      "Scatter: one logical change spread across many files with no shared structure.",
+      "Churn: the same lines rewritten multiple times within the change.",
+    ],
+    ignore: [
+      "Code-level correctness, security, performance, or style issues — those belong to other perspectives; review the change set, not the lines.",
+      "Test quality — that is the test_integrity perspective.",
+      "Individual naming or style nits.",
+      "Pure formatting noise that does not obscure the change.",
+      "Commit-message pedantry without impact on review or recovery.",
+    ],
+    severityGuidance: [
+      "HIGH: the change mixes unrelated work, or its history materially misleads review or recovery (e.g. a misleading commit message hiding a risky change).",
+      "MEDIUM: notable scope creep, drive-by refactors, or rationale gaps that hinder review.",
+      "LOW: minor hygiene — a noisy commit message or a small unrelated tweak.",
+    ],
+    allowedSeverities: ["LOW", "MEDIUM", "HIGH"],
+  },
 }
 
 export function renderBullets(items: readonly string[]): string {
