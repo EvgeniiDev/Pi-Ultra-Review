@@ -1,7 +1,7 @@
 {
   "name": "pi-ultra-review",
-  "version": "1.2.0",
-  "description": "Multi-model parallel code review for Pi. Direct HTTP to providers via OpenAI-compatible API.",
+  "version": "1.2.1",
+  "description": "Multi-model parallel code review for Pi, built on the pi agent runtime (createAgentSession)",
   "type": "module",
   "scripts": {
     "test": "bun test"
