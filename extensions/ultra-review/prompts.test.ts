@@ -63,3 +63,19 @@ test("simplify prompt documents two tools (read_file + search_files)", () => {
   expect(s).toContain("You have one tool:")
   expect(s).not.toContain("You have two tools:")
 })
+
+test("test_integrity prompt lifts the test-file severity cap (tests are the subject)", () => {
+  const p = buildPrompt({ files: ["src/a.test.ts"], diff: "+test" }, "test_integrity")
+  expect(p).toContain("primary subject of this review")
+  expect(p).not.toContain("severity capped at MEDIUM")
+  const s = buildPrompt({ files: ["src/a.test.ts"], diff: "+test" }, "security")
+  expect(s).toContain("severity capped at MEDIUM")
+})
+
+test("shared prefix stays identical across specs even with test files", () => {
+  const nonce = "TESTNONCE"
+  const scopeWithTest = { files: ["src/a.test.ts"], diff: "+x" }
+  const ti = buildPrompt(scopeWithTest, "test_integrity", nonce)
+  const sec = buildPrompt(scopeWithTest, "security", nonce)
+  expect(ti.slice(0, ti.indexOf("# ROLE"))).toBe(sec.slice(0, sec.indexOf("# ROLE")))
+})

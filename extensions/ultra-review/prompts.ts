@@ -412,7 +412,7 @@ export function classifyFile(file: string): "test" | "generated" | "lockfile" | 
 }
 
 const FILE_KIND_POLICY: Record<string, string> = {
-  test: "kind=test — severity capped at MEDIUM; skip style noise",
+  test: "kind=test — test severity policy per perspective; skip style noise",
   generated: "kind=generated — skip style/maintainability/performance unless the generator template itself changed",
   lockfile: "kind=lockfile — dependency audit only",
   code: "kind=code",
@@ -541,6 +541,17 @@ ${renderBullets(spec.investigate)}
 Explicitly ignore:
 
 ${renderBullets(spec.ignore)}
+
+${specId === "test_integrity"
+  ? `
+Note: test files are the primary subject of this review. The usual test-file
+severity cap does NOT apply here: a weakened or disabled gate is a
+HIGH/CRITICAL finding regardless of file kind.
+`
+  : `
+Note: test files remain under the usual test-file rule:
+"kind=test — severity capped at MEDIUM"; skip style noise.
+`}
 
 A concern outside this scope must not be reported, even if it is valid from
 another review perspective.
