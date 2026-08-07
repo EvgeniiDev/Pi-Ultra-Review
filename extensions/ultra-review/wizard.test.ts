@@ -112,6 +112,62 @@ test("runWizard: полный флоу — скоуп, точка зрения, 
   }
 })
 
+test("runWizard: change_quality скрыт для скоупа без диффа, доступен для скоупа с диффом", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs")
+  const { tmpdir } = await import("node:os")
+  const { join } = await import("node:path")
+  const repo = mkdtempSync(join(tmpdir(), "ur-wiz-cq-"))
+  const { execSync } = await import("node:child_process")
+  execSync("git init -q -b main", { cwd: repo })
+  execSync("git config user.email t@t", { cwd: repo })
+  execSync("git config user.name t", { cwd: repo })
+  writeFileSync(join(repo, "a.ts"), "const a = 1\n")
+  execSync("git add -A && git commit -qm init", { cwd: repo })
+  execSync("git branch origin/main", { cwd: repo }) // дифф-скоуп branch_vs_origin/main
+  writeFileSync(join(repo, "b.ts"), "const b = 2\n")
+  execSync("git add -A && git commit -qm second", { cwd: repo })
+
+  // Прогон 1: diff-less скоуп (current_dir) → change_quality не предлагается.
+  let specChoices: string[] = []
+  const uiNoDiff = {
+    select: async (_title: string, choices: string[]) => {
+      if (choices.some((c) => c.startsWith("Current dir"))) return choices.find((c) => c.startsWith("Current dir"))
+      if (choices.some((c) => c.startsWith("security:"))) {
+        // Запоминаем первое окно специализаций и выбираем реальную спеку:
+        // DONE без выбора роняет runWizard ("No specializations selected").
+        specChoices = choices
+        return choices.find((c) => c.startsWith("security:"))
+      }
+      // Модель обязательна: пустой выбор роняет runWizard ("No models selected").
+      if (choices.some((c) => c.startsWith("opencode/kimi"))) return choices.find((c) => c.startsWith("opencode/kimi"))
+      return DONE
+    },
+    confirm: async (title: string) => title.startsWith("Deep mode"),
+    notify() {},
+  }
+  const registry = { find: () => undefined, getAll: () => [model("kimi")] }
+  await runWizard({ ui: uiNoDiff, modelRegistry: registry } as never, repo)
+  expect(specChoices.join("\n")).not.toContain("change_quality")
+
+  // Прогон 2: скоуп с диффом (branch_vs_origin/main) → change_quality доступна.
+  const uiWithDiff = {
+    select: async (_title: string, choices: string[]) => {
+      if (choices.some((c) => c.startsWith("Branch vs"))) return choices.find((c) => c.startsWith("Branch vs"))
+      if (choices.some((c) => c.startsWith("security:"))) {
+        specChoices = choices
+        return choices.find((c) => c.startsWith("security:"))
+      }
+      if (choices.some((c) => c.startsWith("opencode/kimi"))) return choices.find((c) => c.startsWith("opencode/kimi"))
+      return DONE
+    },
+    confirm: async (title: string) => title.startsWith("Deep mode"),
+    notify() {},
+  }
+  await runWizard({ ui: uiWithDiff, modelRegistry: registry } as never, repo)
+  expect(specChoices.join("\n")).toContain("change_quality:")
+  rmSync(repo, { recursive: true, force: true })
+})
+
 test("empty blocked list restores openrouter models (fast revert mechanics)", () => {
   // Механика «быстро вернуть»: BLOCKED_PROVIDERS = [] в constants.ts
   // даёт ровно тот же результат, что передача [] сюда.
