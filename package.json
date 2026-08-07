@@ -1,6 +1,6 @@
 {
   "name": "pi-ultra-review",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Multi-model parallel code review for Pi. Direct HTTP to providers via OpenAI-compatible API.",
   "type": "module",
   "scripts": {
