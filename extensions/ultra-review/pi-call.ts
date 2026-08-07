@@ -53,6 +53,7 @@ export async function chatViaPi(
   signal?: AbortSignal,
   maxTokens?: number,
   reasoningEffort?: ReasoningEffort,
+  sessionId?: string,
 ): Promise<AgentTurn> {
   const fullModel = model as Model<Api>
   const auth = await registry.getApiKeyAndHeaders(fullModel)
@@ -61,12 +62,16 @@ export async function chatViaPi(
   // Некоторые провайдеры не декларируют supportsReasoningEffort, из-за чего
   // pi-ai молча выбрасывает reasoning_effort и модель думает на полную:
   // мышление накапливается в контексте и генерация обрывается. Патчим compat
-  // на лету, чтобы reasoning_effort дошёл.
+  // на лету, чтобы reasoning_effort дошёл. sendSessionAffinityHeaders — чтобы
+  // sessionId (один на прогон ревью) уходил в x-session-id/x-session-affinity:
+  // если бэкенд маршрутизирует по сессии, спеки прогона попадают на тёплый узел
+  // с разогретым prefix-кэшем. Незнакомые заголовки провайдеры игнорируют.
   const effectiveModel = Object.create(Object.getPrototypeOf(fullModel)) as Model<Api>
   Object.assign(effectiveModel, fullModel)
   ;(effectiveModel as { compat?: Record<string, unknown> }).compat = {
     ...((fullModel as { compat?: Record<string, unknown> }).compat ?? {}),
     supportsReasoningEffort: true,
+    sendSessionAffinityHeaders: true,
   }
 
   // Free-tier релей отдаёт разные временные транспортные сбои: 429, 5xx,
@@ -92,6 +97,7 @@ export async function chatViaPi(
         temperature: MODEL_TEMPERATURE,
         maxTokens: maxTokens ?? MODEL_MAX_TOKENS,
         reasoningEffort,
+        sessionId,
       }).then((r) => {
         if (r.stopReason === "error" && isRetryable(new Error(r.errorMessage ?? ""))) {
           throw new Error(`${model.provider}/${model.id} error: ${r.errorMessage}`)
@@ -117,6 +123,7 @@ export async function judgeViaPi(
   prompt: string,
   signal?: AbortSignal,
   attempts = 2,
+  sessionId?: string,
 ): Promise<{ text: string }> {
   const user = "Emit your JSON verdict now — exactly the schema from the prompt."
   // Свежий no-tools вызов: у судьи нет тулов, спираль невозможна.
@@ -131,6 +138,7 @@ export async function judgeViaPi(
         signal,
         MODEL_MAX_TOKENS,
         REASONING_EFFORT,
+        sessionId,
       )
       const text = extractText(turn.content)
       if (text) return { text }
@@ -152,6 +160,7 @@ export async function runAgent(
   root: string,
   signal?: AbortSignal,
   opts: { extraTools?: Tool[]; maxIterations?: number; maxToolCalls?: number } = {},
+  sessionId?: string,
 ): Promise<{ text: string; toolCalls: number; readFiles: string[] }> {
   const label = `${model.provider}/${model.id}`
   const tools: Tool[] = [makeReadTool(), ...(opts.extraTools ?? [])]
@@ -166,7 +175,7 @@ export async function runAgent(
   let messages: unknown[] = initialMessages
   const attempt = async (): Promise<string> => {
     const chat: AgentChat = (msgs, toolsList, s) =>
-      chatViaPi(registry, model, prompt, msgs, toolsList as Tool[], s, undefined, effort)
+      chatViaPi(registry, model, prompt, msgs, toolsList as Tool[], s, undefined, effort, sessionId)
     const loop = await runAgentLoop(chat, messages, tools, executor, {
       maxIterations: opts.maxIterations ?? 8,
       maxToolCalls: opts.maxToolCalls ?? 30,

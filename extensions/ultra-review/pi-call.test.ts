@@ -13,13 +13,15 @@ import { test, expect, mock, beforeEach } from "bun:test"
 let completeCalls = 0
 let completeImpl: () => Promise<unknown> = async () => ({ stopReason: "end_turn", content: [] })
 let lastMessages: unknown[] = []
+let lastOptions: Record<string, unknown> = {}
 
 // Мокаем pi-ai compat и константы (вне рантайма пи модуль не резолвится;
 // delay в тестах — 1ms вместо 1500ms). mock.module должен стоять до импорта.
 mock.module("@earendil-works/pi-ai/compat", () => ({
-  complete: async (_m: unknown, req: { messages?: unknown[] }) => {
+  complete: async (_m: unknown, req: { messages?: unknown[] }, opts: Record<string, unknown>) => {
     completeCalls++
     lastMessages = req?.messages ?? []
+    lastOptions = opts ?? {}
     return completeImpl()
   },
 }))
@@ -47,11 +49,13 @@ const fakeRegistry = {
 // cost задан, чтобы reasoningEffortFor трактовал модель как платную (max).
 const fakeModel = { provider: "test", id: "m", cost: { input: 1, output: 1 } }
 const call = () => chatViaPi(fakeRegistry as never, fakeModel as never, "sys", [], undefined)
+const callWithSession = (sessionId: string) => chatViaPi(fakeRegistry as never, fakeModel as never, "sys", [], undefined, undefined, undefined, undefined, sessionId)
 
 beforeEach(() => {
   completeCalls = 0
   completeImpl = async () => ({ stopReason: "end_turn", content: [] })
   lastMessages = []
+  lastOptions = {}
 })
 
 test("error-stopReason 'Stream ended' ретраится (2 попытки) и восстанавливается", async () => {
@@ -184,6 +188,16 @@ test("runAgent: вердикт пишется прямо, без submit_review",
 // judgeViaPi: свежий no-tools вызов судьи без спирали чтения. Возвращает текст
 // JSON-вердикта; на пусто/тул-разметку повторяет попытку.
 // ─────────────────────────────────────────────────────────────────────────────
+
+test("sessionId прокидывается в options complete (один id на прогон ревью)", async () => {
+  await callWithSession("sess-abc")
+  expect(lastOptions.sessionId).toBe("sess-abc")
+})
+
+test("chatViaPi без sessionId не шлёт его", async () => {
+  await call()
+  expect(lastOptions.sessionId).toBeUndefined()
+})
 
 test("judgeViaPi возвращает JSON-вердикт судьи", async () => {
   const json = '{"verdicts":[{"idx":1,"verdict":"VALID","duplicate_of":null,"new_severity":null,"rationale":"ok"}],"summary":{"valid":1},"kept":[1]}'

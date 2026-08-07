@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { randomUUID } from "node:crypto"
 import { Type } from "@sinclair/typebox"
 import { SPECIALIZATIONS } from "./constants.ts"
 import { executeReview } from "./engine.ts"
@@ -37,12 +38,16 @@ export default function (pi: ExtensionAPI) {
         if (specs.length === 0) throw new Error("No valid specIds")
         if (models.length === 0) throw new Error("No valid modelIds")
 
+        // Один session id на прогон ревью: все спеки/модели идут с ним — если
+        // провайдер маршрутизирует по сессии, они попадают на тёплый узел
+        // с разогретым prefix-кэшем (см. chatViaPi).
+        const sessionId = randomUUID()
         const deps = {
           ui: ctx.ui,
           callModel: (m: PiModelLike, p: string, specId: string, s?: AbortSignal) =>
             specId === "judge"
-              ? judgeViaPi(ctx.modelRegistry, m, p, s)
-              : runAgent(ctx.modelRegistry, m, p, ctx.cwd, s, agentOptionsForSpec(specId)),
+              ? judgeViaPi(ctx.modelRegistry, m, p, s, 2, sessionId)
+              : runAgent(ctx.modelRegistry, m, p, ctx.cwd, s, agentOptionsForSpec(specId), sessionId),
         }
         const { summary, filename } = await executeReview(deps, ctx.cwd, { scope, specs, models, deep: params.deep, judge: params.judge ?? false }, signal)
         return { content: [{ type: "text", text: `✅ ${summary}\n📋 Report: reviews/${filename}` }], details: { filename } }
@@ -63,12 +68,13 @@ export default function (pi: ExtensionAPI) {
         const cfg = await runWizard(ctx, ctx.cwd)
         ui.notify(`Running ${cfg.deep ? cfg.models.length * cfg.specs.length : cfg.specs.length} parallel reviews...`, "info")
 
+        const sessionId = randomUUID()
         const deps = {
           ui,
           callModel: (m: PiModelLike, p: string, specId: string, s?: AbortSignal) =>
             specId === "judge"
-              ? judgeViaPi(ctx.modelRegistry, m, p, s)
-              : runAgent(ctx.modelRegistry, m, p, ctx.cwd, s, agentOptionsForSpec(specId)),
+              ? judgeViaPi(ctx.modelRegistry, m, p, s, 2, sessionId)
+              : runAgent(ctx.modelRegistry, m, p, ctx.cwd, s, agentOptionsForSpec(specId), sessionId),
         }
         const { summary, filename } = await executeReview(deps, ctx.cwd, cfg)
         ui.notify(`✅ ${summary}\n📋 reviews/${filename}`, "success")
