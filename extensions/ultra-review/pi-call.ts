@@ -82,7 +82,7 @@ async function runSession(
     }),
     execute: async (_id, params: { path?: unknown; startLine?: unknown; endLine?: unknown }) => {
       if (budget-- <= 0) {
-        return { content: [{ type: "text", text: "ERROR: read budget reached. Output your final verdict now based on what you have read." }], details: {} }
+        return { content: [{ type: "text", text: "ERROR: read budget reached. Output your final verdict now based on what you have read." }], details: {}, terminate: true }
       }
       const path = String(params.path ?? "")
       const res = await readFileSafely(root, path, params.startLine as number | undefined, params.endLine as number | undefined)
@@ -104,7 +104,7 @@ async function runSession(
     }),
     execute: async (_id, params: { query?: unknown; path?: unknown }) => {
       if (budget-- <= 0) {
-        return { content: [{ type: "text", text: "ERROR: search budget reached. Output your final verdict now based on what you have." }], details: {} }
+        return { content: [{ type: "text", text: "ERROR: search budget reached. Output your final verdict now based on what you have." }], details: {}, terminate: true }
       }
       const query = String(params.query ?? "")
       const path = params.path === undefined ? undefined : String(params.path)
@@ -137,6 +137,13 @@ async function runSession(
     if (event.type === "tool_execution_start") toolCalls++
   })
 
+  // Отмена ревью прерывает сессию: иначе abort-сигнал игнорировался бы
+  // и задача продолжала крутить модель впустую.
+  const onAbort = () => {
+    void session.abort()
+  }
+  signal?.addEventListener("abort", onAbort, { once: true })
+
   try {
     await session.prompt("Review the files in scope and output your verdict.")
     let text = lastAssistantText(session)
@@ -148,6 +155,7 @@ async function runSession(
     }
     return { text, toolCalls, readFiles: [...readFiles] }
   } finally {
+    signal?.removeEventListener("abort", onAbort)
     session.dispose()
   }
 }
@@ -186,10 +194,15 @@ export async function judgeViaPi(
     sessionManager: SessionManager.inMemory(),
     settingsManager: SettingsManager.inMemory(),
   })
+  const onAbort = () => {
+    void session.abort()
+  }
+  signal?.addEventListener("abort", onAbort, { once: true })
   try {
     await session.prompt("Emit your JSON verdict now — exactly the schema from the prompt.")
     return { text: lastAssistantText(session) }
   } finally {
+    signal?.removeEventListener("abort", onAbort)
     session.dispose()
   }
 }

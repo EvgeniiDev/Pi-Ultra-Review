@@ -14,8 +14,11 @@ let sessionOpts: any = null
 let promptCalls: string[] = []
 let followUpCalls: string[] = []
 let disposed = 0
+let aborted = 0
 let fakeMessages: any[] = []
 let autoReadPath: string | null = null
+let holdPrompt = false
+let promptResolve: (() => void) | null = null
 
 // typebox — peer-зависимость pi (в рантайме есть, в bun-тестах нет).
 mock.module("@sinclair/typebox", () => ({
@@ -33,6 +36,12 @@ mock.module("@earendil-works/pi-coding-agent", () => ({
           if (autoReadPath) {
             await sessionOpts.customTools.find((t: any) => t.name === "read_file").execute("id", { path: autoReadPath })
           }
+          // Для теста отмены: держим prompt, пока abort() не отпустит его.
+          if (holdPrompt) {
+            await new Promise<void>((resolve) => {
+              promptResolve = resolve
+            })
+          }
         },
         followUp: async (text: string) => {
           followUpCalls.push(text)
@@ -41,6 +50,11 @@ mock.module("@earendil-works/pi-coding-agent", () => ({
         },
         dispose: () => {
           disposed++
+        },
+        abort: () => {
+          aborted++
+          promptResolve?.()
+          promptResolve = null
         },
         subscribe: () => () => {},
         agent: {
@@ -74,8 +88,11 @@ beforeEach(() => {
   promptCalls = []
   followUpCalls = []
   disposed = 0
+  aborted = 0
   fakeMessages = []
   autoReadPath = null
+  holdPrompt = false
+  promptResolve = null
 })
 
 test("runAgent: сессия с нашими тулами (без системных), prompt, вердикт, dispose", async () => {
@@ -129,6 +146,19 @@ test("runAgent: read_file тул ходит в песочницу, прочит�
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+test("runAgent: отмена (abort-сигнал) прерывает сессию", async () => {
+  fakeMessages = [{ role: "assistant", content: [{ type: "text", text: '{"context":"FULL","findings":[]}' }] }]
+  holdPrompt = true // prompt не завершается, пока abort() не отпустит
+  const controller = new AbortController()
+  const resPromise = runAgent(model, "review prompt", process.cwd(), controller.signal)
+  await new Promise((r) => setTimeout(r, 10)) // даём prompt стартовать
+  controller.abort()
+  const res = await resPromise
+  expect(aborted).toBe(1) // сессия прервана по сигналу
+  expect(res.text).toBe('{"context":"FULL","findings":[]}')
+  expect(disposed).toBe(1)
 })
 
 test("judgeViaPi: без тулов (noTools all), промпт судьи, текст из сообщений", async () => {
