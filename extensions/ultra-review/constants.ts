@@ -7,8 +7,11 @@ import type { SpecId } from "./types.ts"
 // страховкой от патологических диффов (5MB уронили бы запрос context-overflow).
 export const MAX_DIFF_CHARS = 100_000
 
+/** Кап коммит-истории в промпте (используется спеками, смотрящими на коммиты). */
+export const MAX_COMMIT_CHARS = 20_000
+
 /** Версия промтов для отладки/evals: меняй при каждом изменении контракта. */
-export const PROMPT_VERSION = "2026-08-07b.json"
+export const PROMPT_VERSION = "2026-08-08a.json"
 
 // Параллельность ревью: не больше PROVIDER_MAX_CONCURRENCY одновременных
 // запросов к одному провайдеру и не больше GLOBAL_MAX_CONCURRENCY всего.
@@ -27,6 +30,8 @@ export const SPECIALIZATIONS: Record<SpecId, string> = {
   style: "Style & Idiom (conventions, naming, readability)",
   best_practices: "Best Practices (SOLID, DRY, error propagation)",
   simplify: "Simplify (reuse, dead code, thin wrappers, cleanup)",
+  test_integrity: "Test Integrity (weakened gates, missing coverage, tautological tests)",
+  change_quality: "Change Quality (coherence, scope, commit hygiene)",
 }
 
 // Модели, которые всегда показываем в мастере в первую очередь.

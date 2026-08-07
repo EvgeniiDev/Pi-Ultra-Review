@@ -44,3 +44,37 @@ describe("simplify spec", () => {
     expect(s.role).toContain("simplification")
   })
 })
+
+describe("test_integrity spec", () => {
+  test("registered in SPEC_IDS and accepted by assertSpecId", () => {
+    expect(SPEC_IDS).toContain("test_integrity")
+    expect(assertSpecId("test_integrity")).toBe("test_integrity")
+  })
+
+  test("full rule set, all four severities, tests are the subject", () => {
+    const s = REVIEW_SPECS.test_integrity
+    expect(s).toBeDefined()
+    expect(s.allowedSeverities).toEqual(["LOW", "MEDIUM", "HIGH", "CRITICAL"])
+    expect(s.investigate).toHaveLength(9)
+    expect(s.ignore).toHaveLength(6)
+    expect(s.severityGuidance).toHaveLength(4)
+    expect(s.mission).toContain("not weakened to get green")
+  })
+})
+
+describe("change_quality spec", () => {
+  test("registered in SPEC_IDS and accepted by assertSpecId", () => {
+    expect(SPEC_IDS).toContain("change_quality")
+    expect(assertSpecId("change_quality")).toBe("change_quality")
+  })
+
+  test("full rule set, no CRITICAL", () => {
+    const s = REVIEW_SPECS.change_quality
+    expect(s).toBeDefined()
+    expect(s.allowedSeverities).toEqual(["LOW", "MEDIUM", "HIGH"])
+    expect(s.investigate).toHaveLength(9)
+    expect(s.ignore).toHaveLength(5)
+    expect(s.severityGuidance).toHaveLength(3)
+    expect(s.mission).toContain("coherent")
+  })
+})

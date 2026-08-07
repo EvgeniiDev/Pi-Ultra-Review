@@ -9,6 +9,8 @@ export const SPEC_IDS = [
   "style",
   "best_practices",
   "simplify",
+  "test_integrity",
+  "change_quality",
 ] as const
 
 export type SpecId = (typeof SPEC_IDS)[number]
