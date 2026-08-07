@@ -218,6 +218,44 @@ test("final text that is still tool markup gets a no-tools verdict nudge", async
   expect(calls).toBe(2)
 })
 
+test("markup on first nudge: second JSON-template nudge pulls the verdict", async () => {
+  let calls = 0
+  const toolBlock = '<tool_calls>\n<invoke name="read_file">\n<parameter name="path">src/a.ts</parameter>\n</invoke>\n</tool_calls>'
+  const chat = async (messages: unknown[], toolsList: unknown[]) => {
+    assertProtocol(messages as Msg[])
+    calls++
+    if (calls === 1) {
+      const content = [{ type: "toolCall", id: "call-1", name: "read_file", arguments: { path: "a.py" } }]
+      return { assistantMessage: { role: "assistant", content }, content, stopReason: "toolCalls" }
+    }
+    if (calls === 2) {
+      // Первый нодж: модель снова пишет тул-разметку текстом (застряла в тул-режиме).
+      return {
+        assistantMessage: { role: "assistant", content: [{ type: "text", text: toolBlock }] },
+        content: [{ type: "text", text: toolBlock }],
+        stopReason: "text",
+      }
+    }
+    // Второй нодж (JSON-шаблон): модель заполняет шаблон — вердикт получен.
+    const text = '{"context":"FULL","findings":[{"severity":"low","category":"c","file":"src/a.ts","line":1,"lineEnd":null,"title":"t","description":"d","evidence":"e"}]}'
+    return {
+      assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
+      content: [{ type: "text", text }],
+      stopReason: "end",
+    }
+  }
+  const res = await runAgentLoop(
+    chat as never,
+    [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
+    [],
+    async () => ({ ok: true, text: "contents" }),
+    { maxIterations: 1, maxToolCalls: 10 }, // 1 итерация + 2 ноджа (calls 1,2,3)
+    undefined,
+  )
+  expect(res.text).toContain('"context":"FULL"')
+  expect(calls).toBe(3)
+})
+
 test("isToolMarkup: '<' inside a JSON verdict is NOT tool markup", () => {
   expect(isToolMarkup('{"context":"FULL","findings":[{"severity":"LOW","file":"src/a.ts","line":1,"title":"off-by-one when i < n"}]}')).toBe(false)
   expect(isToolMarkup('if (a < b && c > d) {\n  doSomething()\n}')).toBe(false)

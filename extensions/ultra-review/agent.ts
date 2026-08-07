@@ -423,17 +423,27 @@ export async function runAgentLoop(
   }
 
   // Финал: пустой текст или всё ещё тул-разметка (модель «напечатала» вызов
-  // тула текстом на последней итерации) → один финальный no-tools запрос
-  // вердикта. Если и он вернул разметку — отдаём накопленный текст
-  // (пустой поймает retryOnEmpty, который продолжает ту же беседу).
-  if (!text.trim() || isToolMarkup(text)) {
-    const nudge = await chat(
-      [...messages, { role: "user", content: [{ type: "text", text: "No more tool calls are available. Output the final review verdict JSON directly as text now, based on what you have read." }], timestamp: Date.now() }],
-      [],
-      signal,
-    )
-    const verdict = extractText(nudge.content)
-    if (verdict && !isToolMarkup(verdict)) text = verdict
+  // тула текстом на последней итерации). До двух ноджей без тулов: первый —
+  // запрос вердикта, второй — готовый JSON-шаблон (модель в «тул-режиме»
+  // выходит из цикла, заполняя шаблон). Если всё равно разметка/пусто —
+  // runAgent сочтёт это пустым и повторит цикл С тулами (продолжение беседы).
+  const nudges = [
+    "No more tool calls are available. Output the final review verdict JSON directly as text now, based on what you have read.",
+    'Fill in and output ONLY this JSON template with real values (valid JSON): {"context":"FULL","findings":[{"severity":"low|medium|high|critical","category":"...","file":"...","line":1,"lineEnd":null,"title":"...","trigger":"...","impact":"...","fix":"...","evidence":"..."}]}',
+  ]
+  for (const nudgeText of nudges) {
+    if (!text.trim() || isToolMarkup(text)) {
+      const nudge = await chat(
+        [...messages, { role: "user", content: [{ type: "text", text: nudgeText }], timestamp: Date.now() }],
+        [],
+        signal,
+      )
+      const verdict = extractText(nudge.content)
+      if (verdict && !isToolMarkup(verdict)) {
+        text = verdict
+        break
+      }
+    }
   }
   return { text, iterations: maxIterations, toolCalls, messages }
 }

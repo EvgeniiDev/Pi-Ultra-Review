@@ -1,7 +1,7 @@
 import { complete, type UserMessage } from "@earendil-works/pi-ai/compat"
 import type { Api, Message, Model, Tool } from "@earendil-works/pi-ai"
 import { Type } from "@sinclair/typebox"
-import { extractText, makeExecutor, runAgentLoop, type AgentChat, type AgentTurn } from "./agent.ts"
+import { extractText, isToolMarkup, makeExecutor, runAgentLoop, type AgentChat, type AgentTurn } from "./agent.ts"
 import { EMPTY_RESPONSE_RETRIES, MODEL_MAX_TOKENS, MODEL_TEMPERATURE, REASONING_EFFORT, RETRY_DELAY_MS, SIMPLIFY_MAX_ITERATIONS, SIMPLIFY_MAX_TOOL_CALLS } from "./constants.ts"
 import { retryOnEmpty, retryOnFailure } from "./retry.ts"
 import type { PiModelLike, PiRegistryLike, ReasoningEffort } from "./types.ts"
@@ -40,7 +40,9 @@ export function agentOptionsForSpec(specId: string): { extraTools: Tool[]; maxIt
   if (specId === "simplify") {
     return { extraTools: [makeSearchTool()], maxIterations: SIMPLIFY_MAX_ITERATIONS, maxToolCalls: SIMPLIFY_MAX_TOOL_CALLS }
   }
-  return { extraTools: [], maxIterations: 8, maxToolCalls: 30 }
+  // 10 итераций / 40 чтений: модель с max reasoning читает много файлов до
+  // вердикта; меньший бюджет упирался в isLast с текстовой разметкой тулов.
+  return { extraTools: [], maxIterations: 10, maxToolCalls: 40 }
 }
 
 /** Один ход диалога через провайдерский слой pi (авторизация pi, нормализация pi). */
@@ -182,17 +184,19 @@ export async function runAgent(
     }, signal)
     toolCalls += loop.toolCalls
     messages = loop.messages
-    if (!loop.text.trim()) {
-      // Пустой вердикт — продолжаем ТУ ЖЕ беседу, а не рестартуем цикл:
-      // файлы уже прочитаны, контекст накоплен, префикс запроса в кэше
-      // провайдера. Нодж в ту же историю вместо чтения всего заново.
+    // Тул-разметка как финал — это не вердикт: считаем пустым, чтобы
+    // retryOnEmpty продолжил беседу С тулами (модель дочитает и выдаст вердикт).
+    const finalText = isToolMarkup(loop.text) ? "" : loop.text
+    if (!finalText.trim()) {
+      // Пустой/невердиктный ответ — продолжаем ТУ ЖЕ беседу, а не рестартуем:
+      // файлы уже прочитаны, контекст накоплен, префикс в кэше провайдера.
       messages.push({
         role: "user",
-        content: [{ type: "text", text: "Your previous response was empty. Produce the final review verdict JSON now based on what you have read. You may read additional files if you need more context." }],
+        content: [{ type: "text", text: "Your previous response was empty or not a verdict. Produce the final review verdict JSON now based on what you have read. You may read additional files if you need more context." }],
         timestamp: Date.now(),
       })
     }
-    return loop.text
+    return finalText
   }
 
   let text: string

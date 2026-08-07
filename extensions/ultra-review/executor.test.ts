@@ -90,6 +90,6 @@ test("agentOptionsForSpec gives search tool and budget to simplify only", () => 
   expect(s.maxToolCalls).toBe(40)
   const o = agentOptionsForSpec("security")
   expect(o.extraTools).toEqual([])
-  expect(o.maxIterations).toBe(8)
-  expect(o.maxToolCalls).toBe(30)
+  expect(o.maxIterations).toBe(10)
+  expect(o.maxToolCalls).toBe(40)
 })

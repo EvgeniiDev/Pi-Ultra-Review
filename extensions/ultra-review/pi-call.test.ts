@@ -137,7 +137,11 @@ test("runAgent: пустой вердикт → ретрай продолжае�
         return { stopReason: "toolUse", content, assistantMessage: { role: "assistant", content } }
       }
       if (n === 2) {
-        // Внутрицикловый нодж тоже падает (тул-разметка текстом) → ретрай.
+        // Нодж №1 (no-tools): модель снова пишет тул-разметку текстом.
+        return { stopReason: "text", content: [{ type: "text", text: '<tool_calls>\n<invoke name="read_file">' }], assistantMessage: { role: "assistant", content: [{ type: "text", text: '<tool_calls>' }] } }
+      }
+      if (n === 3) {
+        // Нодж №2 (JSON-шаблон): всё ещё разметка → retryOnEmpty продолжает беседу.
         return { stopReason: "text", content: [{ type: "text", text: '<tool_calls>\n<invoke name="read_file">' }], assistantMessage: { role: "assistant", content: [{ type: "text", text: '<tool_calls>' }] } }
       }
       // Ретрай: та же история (с toolResult и ноджами) → вердикт.
@@ -146,7 +150,7 @@ test("runAgent: пустой вердикт → ретрай продолжае�
 
     const res = await runAgent(fakeRegistry as never, fakeModel as never, "sys", dir, undefined, { maxIterations: 1, maxToolCalls: 10 })
     expect(res.text).toBe(verdict)
-    expect(n).toBe(3)
+    expect(n).toBe(4)
     const history = JSON.stringify(lastMessages)
     expect(history).toContain("call-1") // toolResult первой попытки в истории
     expect(history).toContain("previous response was empty") // ретрай-нодж в ту же беседу
