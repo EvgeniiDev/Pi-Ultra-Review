@@ -397,6 +397,7 @@ function applyJudge(parsed: JudgeOutput, findings: JudgedFinding[], judgeModelNa
   const verdict = judgeVerdict(kept)
   return {
     verdict,
+    kept,
     lines: [
       `## Judge (${judgeModelName})`,
       `**Valid:** ${valid} | **Duplicates:** ${duplicate} | **False positives:** ${fp} | **Downgraded:** ${downgrade}`,
@@ -513,8 +514,10 @@ export async function executeReview(
       for (const f of processed.findings) {
         const where = `${f.file}:${f.line}${f.lineEnd && f.lineEnd !== f.line ? `-${f.lineEnd}` : ""}`
         const riskAction = f.risk && f.action ? ` (risk: ${f.risk}, action: ${f.action})` : ""
-        const parts = [`- [${f.severity}] ${where}${f.side ? ` (${f.side})` : ""} — ${f.title}${riskAction}`]
+        const tag = f.severity === "HIGH" || f.severity === "CRITICAL" ? "[BLOCKER]" : "[SUGGESTION]"
+        const parts = [`- ${tag} [${f.severity}] ${where}${f.side ? ` (${f.side})` : ""} — ${f.title}${riskAction}`]
         if (f.category) parts.push(`category: ${f.category}`)
+        if (f.rule) parts.push(`rule: ${f.rule}`)
         if (f.reuseTarget) parts.push(`reuse: ${f.reuseTarget}`)
         if (f.trigger) parts.push(`trigger: ${f.trigger}`)
         if (f.evidence) parts.push(`evidence: ${f.evidence}`)
@@ -523,7 +526,7 @@ export async function executeReview(
       }
     }
     if (processed.rejectedCount > 0) {
-      lines.push(`> ⚠️ ${processed.rejectedCount} finding(s) rejected: missing file/line, file not in scope/read, or invalid severity${r.specName === "simplify" ? ", or missing/invalid risk/action (simplify)" : ""}.`)
+      lines.push(`> ⚠️ ${processed.rejectedCount} finding(s) rejected: missing file/line, file not in scope/read, invalid severity${r.specName === "simplify" ? ", or missing/invalid risk/action (simplify)" : ""}, or missing rule (required for HIGH/CRITICAL).`)
     }
     if (r.toolCalls === 0 && !processed.malformed) {
       lines.push("> ⚠️ Agent did not use read_file — reviewed from manifest/diff only.")
@@ -541,6 +544,8 @@ export async function executeReview(
 
   // ── Судья (опционально)
   let finalVerdict = consensus
+  let judgeKept: ValidatedFinding[] = []
+  let parsedJudgeOk = false
   if (cfg.judge && ok > 0) {
     if (allFindings.length > 0) {
       const judgeModel = cfg.models[0]
@@ -550,6 +555,8 @@ export async function executeReview(
         const parsed = parseJudgeJson(out.text)
         if (parsed?.verdicts?.length) {
           const judged = applyJudge(parsed, allFindings, `${judgeModel.provider}/${judgeModel.id}`)
+          judgeKept = judged.kept
+          parsedJudgeOk = true
           lines.push(...judged.lines)
           finalVerdict = judged.verdict
         } else {
@@ -563,6 +570,11 @@ export async function executeReview(
       lines.push("## Judge", "No findings to judge.")
     }
   }
+
+  const finalFindings = parsedJudgeOk && cfg.judge ? judgeKept : allFindings
+  const blockers = finalFindings.filter((f) => f.severity === "HIGH" || f.severity === "CRITICAL").length
+  const suggestions = finalFindings.length - blockers
+  lines.push(`**Blockers:** ${blockers} | **Suggestions:** ${suggestions}`)
 
   const report = lines.join("\n")
   const safeBranch = branch.replace(/[^\w.-]+/g, "-").replace(/^\.+/, "").slice(0, 60) || "unknown"

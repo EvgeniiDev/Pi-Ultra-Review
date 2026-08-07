@@ -282,3 +282,31 @@ test("executeReview renders risk/action and reuseTarget into the report", async 
   expect(report).toContain("reuse: x in src/y.ts")
   rmSync(dir, { recursive: true, force: true })
 })
+
+test("report renders BLOCKER/SUGGESTION tags and rule", async () => {
+  const { mkdtempSync, mkdirSync, rmSync } = await import("node:fs")
+  const { tmpdir } = await import("node:os")
+  const dir = mkdtempSync(join(tmpdir(), "ur-rule-"))
+  const cfg: ReviewConfig = {
+    scope: { id: "test", label: "test scope", description: "", files: ["src/a.ts"] },
+    specs: ["security"],
+    models: [{ id: "m", name: "m", provider: "p", cost: { input: 0, output: 0 } }],
+    deep: false,
+    judge: false,
+  }
+  const deps: ReviewDeps = {
+    ui: { setStatus() {}, select: async () => "x", confirm: async () => true, notify() {} },
+    callModel: async () => ({
+      text: `{"context":"FULL","findings":[{"severity":"HIGH","file":"src/a.ts","line":1,"title":"injection","rule":"sql_injection"},{"severity":"LOW","file":"src/a.ts","line":2,"title":"naming"}]}`,
+      toolCalls: 1,
+      readFiles: ["src/a.ts"],
+    }),
+  }
+  const { filename } = await executeReview(deps, dir, cfg)
+  const report = readFileSync(join(dir, "reviews", filename), "utf-8")
+  expect(report).toContain("- [BLOCKER] [HIGH] src/a.ts:1")
+  expect(report).toContain("rule: sql_injection")
+  expect(report).toContain("- [SUGGESTION] [LOW] src/a.ts:2")
+  expect(report).toContain("**Blockers:** 1 | **Suggestions:** 1")
+  rmSync(dir, { recursive: true, force: true })
+})
