@@ -21,7 +21,7 @@ function getModelRuntime(): Promise<ModelRuntime> {
 }
 
 /** Минимальный загрузчик: только наш системный промпт, без расширений/скиллов. */
-function makeLoader(systemPrompt: string): DefaultResourceLoader {
+async function makeLoader(systemPrompt: string): Promise<DefaultResourceLoader> {
   const loader = new DefaultResourceLoader({
     cwd: process.cwd(),
     agentDir: "~/.pi/agent",
@@ -32,8 +32,9 @@ function makeLoader(systemPrompt: string): DefaultResourceLoader {
     noContextFiles: true,
     systemPrompt,
   })
-  // reload() синхронно-быстрый при noExtensions: только системный промпт.
-  void loader.reload()
+  // reload() обязателен ДО createAgentSession: без await сессия прочитала бы
+  // пустой системный промпт (в smoke-тесте модель не видела манифест файлов).
+  await loader.reload()
   return loader
 }
 
@@ -117,6 +118,7 @@ async function runSession(
 
   const tools = opts.search ? [readTool, searchTool] : [readTool]
   const runtime = await getModelRuntime()
+  const resourceLoader = await makeLoader(systemPrompt)
 
   const { session } = await createAgentSession({
     cwd: root,
@@ -126,7 +128,7 @@ async function runSession(
     // ТОЛЬКО наши тулы: системные (read, bash, edit, write) не включаем.
     tools: tools.map((t) => t.name),
     customTools: tools,
-    resourceLoader: makeLoader(systemPrompt),
+    resourceLoader,
     sessionManager: SessionManager.inMemory(),
     settingsManager: SettingsManager.inMemory(),
   })
@@ -173,13 +175,14 @@ export async function judgeViaPi(
   signal?: AbortSignal,
 ): Promise<{ text: string }> {
   const runtime = await getModelRuntime()
+  const resourceLoader = await makeLoader(prompt)
   const { session } = await createAgentSession({
     cwd: process.cwd(),
     modelRuntime: runtime,
     model: runtime.getModel(model.provider, model.id),
     thinkingLevel: REASONING_EFFORT,
     noTools: "all",
-    resourceLoader: makeLoader(prompt),
+    resourceLoader,
     sessionManager: SessionManager.inMemory(),
     settingsManager: SettingsManager.inMemory(),
   })
