@@ -72,6 +72,27 @@ test("test_integrity prompt lifts the test-file severity cap (tests are the subj
   expect(s).toContain("severity capped at MEDIUM")
 })
 
+test("test-file severity notes are absent when the scope has no test files", () => {
+  const noTests = { files: ["src/a.ts"], diff: "+x" }
+  const ti = buildPrompt(noTests, "test_integrity")
+  expect(ti).not.toContain("primary subject of this review")
+  const sec = buildPrompt(noTests, "security")
+  expect(sec).not.toContain("severity capped at MEDIUM")
+})
+
+test("cap note does not quote the old test-policy string verbatim", () => {
+  const s = buildPrompt({ files: ["src/a.test.ts"], diff: "+test" }, "security")
+  expect(s).toContain("severity capped at MEDIUM")
+  expect(s).not.toContain('"kind=test — severity capped at MEDIUM"')
+})
+
+test("test-file note renders with clean single-blank-line spacing", () => {
+  const s = buildPrompt({ files: ["src/a.test.ts"], diff: "+test" }, "security")
+  const note = "Note: test files remain under the usual test-file rule for this perspective: severity capped at MEDIUM; skip style noise."
+  expect(s.indexOf(note)).toBeGreaterThan(-1)
+  expect(s.slice(s.indexOf(note), s.indexOf("A concern outside this scope"))).toBe(`${note}\n\n`)
+})
+
 test("shared prefix stays identical across specs even with test files", () => {
   const nonce = "TESTNONCE"
   const scopeWithTest = { files: ["src/a.test.ts"], diff: "+x" }
