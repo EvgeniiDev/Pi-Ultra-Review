@@ -98,7 +98,7 @@ ultra_review({ scopeId, specIds, modelIds, deep, judge? })
   - `current_dir` — все файлы текущей папки
   - `branch_vs_<база>` — изменения ветки относительно базы, например `branch_vs_origin/main`; любое имя начиная с `branch_vs_` выберет ревью ветки
   - `last_commit` — изменения из последнего коммита
-- `specIds` — направления из списка выше (`security`, `correctness`, `performance`, `maintainability`, `style`, `best_practices`, `simplify`)
+- `specIds` — направления из списка выше (`security`, `correctness`, `performance`, `maintainability`, `style`, `best_practices`, `simplify`, `test_integrity`, `change_quality`)
 - `modelIds` — модели форматом `provider/modelId`
 - `deep` — полная матрица модели × спеки (true) или round-robin (false)
 - `judge` — финальный проход судьи: дедупликация и валидация находок (рекомендуется)
