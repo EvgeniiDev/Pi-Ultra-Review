@@ -92,7 +92,8 @@ export async function runWizard(
 
   // 2. Specializations (Multi-select loop)
   const selectedSpecs: SpecId[] = []
-  const allSpecIds = [...SPEC_IDS]
+  // change_quality ревьюит «изменение как целое» — без диффа ей нечего ревьюить.
+  const allSpecIds = [...SPEC_IDS].filter((s) => s !== "change_quality" || !!scope.diff)
   while (true) {
     const remaining = allSpecIds.filter(s => !selectedSpecs.includes(s))
     if (remaining.length === 0) break
