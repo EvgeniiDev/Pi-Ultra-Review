@@ -92,19 +92,28 @@ test("budget exhaustion responds to every real tool_call, then the model answers
   expect(calls).toBe(2)
 })
 
-test("isLast branch answers each real tool_call and preserves the turn's text", async () => {
+test("isLast branch answers each real tool_call; non-contract text is replaced by nudge verdict", async () => {
   let calls = 0
   const chat = async (messages: unknown[], _tools: unknown[]) => {
     assertProtocol(messages as Msg[])
     calls++
-    // maxIterations=1 → isLast сразу; модель всё равно просит тулы и пишет текст.
-    const content = [
-      toolCall("call_1"),
-      toolCall("call_2"),
-      toolCall("call_3"),
-      { type: "text", text: "verdict" },
-    ]
-    return { assistantMessage: { role: "assistant", content }, content, stopReason: "toolCalls" }
+    if (calls === 1) {
+      // maxIterations=1 → isLast сразу; модель просит тулы и пишет текст
+      // без JSON-контракта — нодж заменит его на вердикт.
+      const content = [
+        toolCall("call_1"),
+        toolCall("call_2"),
+        toolCall("call_3"),
+        { type: "text", text: "verdict" },
+      ]
+      return { assistantMessage: { role: "assistant", content }, content, stopReason: "toolCalls" }
+    }
+    const content = [{ type: "text", text: '{"context":"FULL","findings":[]}' }]
+    return {
+      assistantMessage: { role: "assistant", content },
+      content,
+      stopReason: "end",
+    }
   }
   const res = await runAgentLoop(
     chat as never,
@@ -114,10 +123,10 @@ test("isLast branch answers each real tool_call and preserves the turn's text", 
     { maxIterations: 1, maxToolCalls: 10 },
     undefined,
   )
-  // isLast-ветка ответила всем трём тулам (assertProtocol в chat это проверил)
-  // и сохранила текст хода — без отдельного nudging-вызова.
-  expect(res.text).toBe("verdict")
-  expect(calls).toBe(1)
+  // isLast-ветка ответила всем трём тулам (assertProtocol в chat это проверил),
+  // а текст без контракта заменён вердиктом из ноджа.
+  expect(res.text).toBe('{"context":"FULL","findings":[]}')
+  expect(calls).toBe(2)
 })
 
 test("no tool calls → single chat round, no protocol concerns", async () => {
@@ -266,6 +275,32 @@ test("isToolMarkup: invoke/tool_calls/antml/DSML markup IS tool markup", () => {
   expect(isToolMarkup('<tool_calls>\n<invoke name="read_file">')).toBe(true)
   expect(isToolMarkup('<antml:invoke name="read_file">')).toBe(true)
   expect(isToolMarkup('<|DSML|invoke name="read_file">')).toBe(true)
+})
+
+test("empty response with no calls goes through the nudge, not early return", async () => {
+  let calls = 0
+  const chat = async (_messages: unknown[], _tools: unknown[]) => {
+    calls++
+    if (calls === 1) {
+      return { assistantMessage: { role: "assistant", content: [] }, content: [], stopReason: "end" }
+    }
+    const text = '{"context":"FULL","findings":[]}'
+    return {
+      assistantMessage: { role: "assistant", content: [{ type: "text", text }] },
+      content: [{ type: "text", text }],
+      stopReason: "end",
+    }
+  }
+  const res = await runAgentLoop(
+    chat as never,
+    [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
+    [],
+    executor,
+    { maxIterations: 2, maxToolCalls: 10 },
+    undefined,
+  )
+  expect(res.text).toBe('{"context":"FULL","findings":[]}')
+  expect(calls).toBe(2)
 })
 
 test("structured read_file calls are executed, then the verdict text is returned", async () => {

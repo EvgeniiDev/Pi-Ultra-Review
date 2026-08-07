@@ -159,6 +159,32 @@ test("runAgent: пустой вердикт → ретрай продолжае�
   }
 })
 
+test("runAgent: проза без JSON-контракта → ретрай до вердикта", async () => {
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises")
+  const { tmpdir } = await import("node:os")
+  const { join } = await import("node:path")
+  const dir = await mkdtemp(join(tmpdir(), "ur-prose-"))
+  try {
+    await writeFile(join(dir, "a.py"), "x = 1\n")
+    const verdict = '{"context":"FULL","findings":[]}'
+    let n = 0
+    completeImpl = async () => {
+      n++
+      if (n === 1) {
+        // Модель ответила рассуждением без JSON-контракта (нет "findings").
+        const text = "I reviewed the code and it looks fine overall."
+        return { stopReason: "end_turn", content: [{ type: "text", text }], assistantMessage: { role: "assistant", content: [{ type: "text", text }] } }
+      }
+      return { stopReason: "end_turn", content: [{ type: "text", text: verdict }], assistantMessage: { role: "assistant", content: [{ type: "text", text: verdict }] } }
+    }
+    const res = await runAgent(fakeRegistry as never, fakeModel as never, "sys", dir, undefined, { maxIterations: 2, maxToolCalls: 10 })
+    expect(res.text).toBe(verdict)
+    expect(n).toBe(2)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test("runAgent: вердикт пишется прямо, без submit_review", async () => {
   const { mkdtemp, writeFile, rm } = await import("node:fs/promises")
   const { tmpdir } = await import("node:os")

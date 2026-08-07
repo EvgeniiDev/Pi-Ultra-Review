@@ -184,12 +184,14 @@ export async function runAgent(
     }, signal)
     toolCalls += loop.toolCalls
     messages = loop.messages
-    // Тул-разметка как финал — это не вердикт: считаем пустым, чтобы
-    // retryOnEmpty продолжил беседу С тулами (модель дочитает и выдаст вердикт).
-    const finalText = isToolMarkup(loop.text) ? "" : loop.text
+    // Не вердикт (тул-разметка, пусто или проза без JSON-контракта) — считаем
+    // пустым, чтобы retryOnEmpty продолжил беседу С тулами: модель дочитает
+    // и выдаст вердикт по контракту.
+    const finalText =
+      isToolMarkup(loop.text) || !loop.text.trim() || !loop.text.includes('"findings"') ? "" : loop.text
     if (!finalText.trim()) {
-      // Пустой/невердиктный ответ — продолжаем ТУ ЖЕ беседу, а не рестартуем:
-      // файлы уже прочитаны, контекст накоплен, префикс в кэше провайдера.
+      // Продолжаем ТУ ЖЕ беседу, а не рестартуем: файлы уже прочитаны,
+      // контекст накоплен, префикс в кэше провайдера.
       messages.push({
         role: "user",
         content: [{ type: "text", text: "Your previous response was empty or not a verdict. Produce the final review verdict JSON now based on what you have read. You may read additional files if you need more context." }],
