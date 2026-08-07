@@ -4,10 +4,22 @@
   "description": "Multi-model parallel code review for Pi, built on the pi agent runtime (createAgentSession)",
   "type": "module",
   "scripts": {
-    "test": "bun test"
+    "lint": "bunx oxlint .",
+    "format:check": "bunx prettier --check \"**/*.{json,yml,yaml}\"",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "test:coverage": "bun test --coverage --coverage-threshold=80"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.84.1",
+    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@earendil-works/pi-tui": "0.84.1",
+    "@sinclair/typebox": "^0.34.0",
+    "@types/node": "^26.0.0",
+    "typescript": "^5.9.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -15,6 +27,8 @@
     "@sinclair/typebox": "*"
   },
   "pi": {
-    "extensions": ["./extensions"]
+    "extensions": [
+      "./extensions"
+    ]
   }
 }
