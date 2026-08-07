@@ -131,6 +131,11 @@ export const REVIEW_SPECS: Record<SpecId, ReviewSpec> = {
       "Boolean-flag APIs or mode-dependent functions whose behavior becomes combinatorially complex.",
       "Scattered configuration, magic protocol knowledge, or repeated constants that are likely to diverge.",
       "Changes that make isolation, substitution, or focused testing materially harder.",
+      "Cyclomatic complexity above 15 in any method, or lower complexity with opaque path interactions that are hard to reason about.",
+      "Feature envy: a method uses another class's data or behavior more than its own.",
+      "Cohesion problems: methods in a class do not share fields or serve one responsibility.",
+      "Command-query separation violations: a method both mutates state and returns a value.",
+      "Parse-don't-validate: validation scattered after construction; domain objects can be constructed in an invalid state.",
     ],
     ignore: [
       "Small cosmetic cleanup opportunities.",
@@ -163,6 +168,8 @@ export const REVIEW_SPECS: Record<SpecId, ReviewSpec> = {
       "Unnecessarily clever expressions, dense control flow, or compressed logic that harms comprehension.",
       "Public API naming or shape that violates strong conventions visible in the surrounding code.",
       "Inconsistent error, return-value, or optional-value idioms within the same module.",
+      "X-Out names test: blank out the names (methods, parameters, variables, types) — if the code still reads correctly, the names carry no meaning.",
+      "Comments that could be replaced by a better name or type: comments stating WHAT or narrating the change.",
     ],
     ignore: [
       "Preferences that are equally valid alternatives.",

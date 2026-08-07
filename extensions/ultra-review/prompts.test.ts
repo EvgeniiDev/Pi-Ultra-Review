@@ -79,3 +79,18 @@ test("shared prefix stays identical across specs even with test files", () => {
   const sec = buildPrompt(scopeWithTest, "security", nonce)
   expect(ti.slice(0, ti.indexOf("# ROLE"))).toBe(sec.slice(0, sec.indexOf("# ROLE")))
 })
+
+test("maintainability prompt documents named heuristics", () => {
+  const p = buildPrompt(scope, "maintainability")
+  expect(p).toContain("Cyclomatic complexity above 15")
+  expect(p).toContain("Feature envy")
+  expect(p).toContain("Cohesion problems")
+  expect(p).toContain("Command-query separation violations")
+  expect(p).toContain("Parse-don't-validate")
+})
+
+test("style prompt documents X-Out names test and naming-over-comments", () => {
+  const p = buildPrompt(scope, "style")
+  expect(p).toContain("X-Out names test")
+  expect(p).toContain("better name or type")
+})
