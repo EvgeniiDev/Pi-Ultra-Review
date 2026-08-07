@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 import { Type } from "@sinclair/typebox"
 import { SPECIALIZATIONS } from "./constants.ts"
 import { executeReview } from "./engine.ts"
-import { getScopes } from "./scopes.ts"
+import { getScopes, resolveScope } from "./scopes.ts"
 import { agentOptionsForSpec, judgeViaPi, runAgent } from "./pi-call.ts"
 import { parseModelKey, type PiModelLike, type SpecId, type UiLike } from "./types.ts"
 import { runWizard } from "./wizard.ts"
@@ -27,9 +27,7 @@ export default function (pi: ExtensionAPI) {
         const scopes = getScopes(ctx.cwd)
         // Точный id; для семейства branch_vs_* принимаем любой префикс
         // (например, задокументированный branch_vs_main → branch_vs_origin/main).
-        const scope =
-          scopes.find((s) => s.id === params.scopeId) ??
-          (params.scopeId.startsWith("branch_vs_") ? scopes.find((s) => s.id.startsWith("branch_vs_")) : undefined)
+        const scope = resolveScope(scopes, params.scopeId)
         if (!scope) {
           throw new Error(`Unknown scopeId "${params.scopeId}" — available: ${scopes.map((s) => s.id).join(", ") || "none"}`)
         }

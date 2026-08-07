@@ -1,6 +1,32 @@
 import { describe, expect, test } from "bun:test"
+import { SPECIALIZATIONS } from "./constants.ts"
 import { REVIEW_SPECS } from "./prompts.ts"
 import { assertSpecId, SPEC_IDS } from "./types.ts"
+
+describe("spec contract", () => {
+  test("SPEC_IDS ↔ SPECIALIZATIONS ↔ REVIEW_SPECS консистентны (никакого дрейфа)", () => {
+    expect(Object.keys(SPECIALIZATIONS).sort()).toEqual([...SPEC_IDS].sort())
+    for (const id of SPEC_IDS) {
+      const spec = REVIEW_SPECS[id]
+      expect(spec, `REVIEW_SPECS.${id}`).toBeDefined()
+      expect(spec.role).toBeTruthy()
+      expect(spec.mission).toBeTruthy()
+      expect(spec.investigate.length).toBeGreaterThan(0)
+      expect(spec.ignore.length).toBeGreaterThan(0)
+      expect(spec.severityGuidance.length).toBeGreaterThan(0)
+      expect(spec.allowedSeverities.length).toBeGreaterThan(0)
+      for (const sev of spec.allowedSeverities) {
+        expect(["LOW", "MEDIUM", "HIGH", "CRITICAL"]).toContain(sev)
+      }
+    }
+  })
+
+  test("assertSpecId: валидные id проходят, мусор бросает", () => {
+    for (const id of SPEC_IDS) expect(assertSpecId(id)).toBe(id)
+    expect(() => assertSpecId("nope")).toThrow(/Unknown review spec/)
+    expect(() => assertSpecId(undefined)).toThrow(/Unknown review spec/)
+  })
+})
 
 describe("simplify spec", () => {
   test("is registered in SPEC_IDS and accepted by assertSpecId", () => {

@@ -22,6 +22,18 @@ function walkFiles(dir: string, root: string, out: string[]): void {
 }
 
 /**
+ * Резолв scopeId в скоуп: точное совпадение; для семейства branch_vs_*
+ * принимаем любой префикс (задокументированный "branch_vs_main" → реальный
+ * "branch_vs_origin/main"). Неизвестный id → undefined (fail-fast у вызывающего).
+ */
+export function resolveScope(scopes: Scope[], scopeId: string): Scope | undefined {
+  return (
+    scopes.find((s) => s.id === scopeId) ??
+    (scopeId.startsWith("branch_vs_") ? scopes.find((s) => s.id.startsWith("branch_vs_")) : undefined)
+  )
+}
+
+/**
  * Скоупы — это манифесты файлов (плюс git-диф для git-скоупов).
  * Контент файлов агент-ревьюеры читают сами через read_file, по частям.
  */
