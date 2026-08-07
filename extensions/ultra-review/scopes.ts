@@ -71,5 +71,20 @@ export function getScopes(cwd: string): Scope[] {
       }
     } catch {}
   }
+
+  // Скоуп последнего коммита: задокументирован в схеме тула, но не генерировался.
+  try {
+    git("git rev-parse --verify --quiet HEAD", cwd)
+    const diff = git("git diff HEAD~1 HEAD", cwd)
+    if (diff) {
+      scopes.push({
+        id: "last_commit",
+        label: "Last commit",
+        description: "files changed in HEAD",
+        files: extractFiles(diff),
+        diff,
+      })
+    }
+  } catch {}
   return scopes
 }

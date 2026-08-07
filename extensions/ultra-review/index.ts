@@ -9,7 +9,7 @@ import { parseModelKey, type PiModelLike, type SpecId, type UiLike } from "./typ
 import { runWizard } from "./wizard.ts"
 
 const toolSchema = Type.Object({
-  scopeId: Type.String({ description: "Scope ID: working_tree, branch_vs_main, last_commit" }),
+  scopeId: Type.String({ description: "Scope ID: working_tree, current_dir, branch_vs_<base> (e.g. branch_vs_origin/main), last_commit. Prefix branch_vs_ matches the branch scope." }),
   specIds: Type.Array(Type.String(), { description: "Specialization IDs" }),
   modelIds: Type.Array(Type.String(), { description: "Model IDs (provider/modelId)" }),
   deep: Type.Boolean({ description: "Full matrix (true) or round-robin (false)" }),
@@ -25,7 +25,11 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, ctx) {
       try {
         const scopes = getScopes(ctx.cwd)
-        const scope = scopes.find((s) => s.id === params.scopeId)
+        // Точный id; для семейства branch_vs_* принимаем любой префикс
+        // (например, задокументированный branch_vs_main → branch_vs_origin/main).
+        const scope =
+          scopes.find((s) => s.id === params.scopeId) ??
+          (params.scopeId.startsWith("branch_vs_") ? scopes.find((s) => s.id.startsWith("branch_vs_")) : undefined)
         if (!scope) {
           throw new Error(`Unknown scopeId "${params.scopeId}" — available: ${scopes.map((s) => s.id).join(", ") || "none"}`)
         }
