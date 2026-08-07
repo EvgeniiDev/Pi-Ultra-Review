@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { MAX_DIFF_CHARS } from "./constants.ts"
+import { extractFiles } from "./git.ts"
 import { assertSpecId, type ReviewSpec, type SpecId } from "./types.ts"
 
 export const REVIEW_SPECS: Record<SpecId, ReviewSpec> = {
@@ -278,7 +279,6 @@ export function renderBullets(items: readonly string[]): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const CONTROL_CHAR_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g
-const DIFF_HEADER_RE = /^diff --git a\/.* b\/(.+)$/gm
 
 const SECRET_PATTERNS: RegExp[] = [
   /(sk|pk|ghp|gho|xox[baprs]|AKIA)[A-Za-z0-9_-]{16,}/g,
@@ -323,7 +323,8 @@ export function encloseDiff(diff: string, nonce?: string): string {
 
 /**
  * Обрезка по границам строк (не посреди hunk/строки) + список видимых файлов,
- * чтобы модель знала, что именно не попало в diff.
+ * чтобы модель знала, что именно не попало в diff. Парсинг заголовков — общий
+ * с git.ts (extractFiles), а не второй regex: они уже разошлись по кавычкам.
  */
 export function truncateDiff(diff: string): { text: string; truncated: boolean; visibleFiles: Set<string> } {
   const sanitized = sanitizeDiff(diff)
@@ -333,11 +334,7 @@ export function truncateDiff(diff: string): { text: string; truncated: boolean; 
     const cut = sanitized.lastIndexOf("\n", MAX_DIFF_CHARS)
     text = sanitized.slice(0, cut === -1 ? MAX_DIFF_CHARS : cut)
   }
-  const visibleFiles = new Set<string>()
-  for (const m of text.matchAll(DIFF_HEADER_RE)) {
-    visibleFiles.add(m[1].replace(/\{[^}]*=>\s*([^}]*)\}/g, "$1").replace(/"/g, ""))
-  }
-  return { text, truncated: wasTruncated, visibleFiles }
+  return { text, truncated: wasTruncated, visibleFiles: new Set(extractFiles(text)) }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

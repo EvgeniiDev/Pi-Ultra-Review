@@ -1,13 +1,8 @@
 import { readdirSync } from "node:fs"
 import { join, relative } from "node:path"
+import { BLOCKED_DIRS } from "./agent.ts"
 import { extractFiles, git } from "./git.ts"
 import type { Scope } from "./types.ts"
-
-const SKIP_DIRS = new Set([
-  ".git", "node_modules", ".pi", "reviews", "dist", "build", "coverage",
-  ".venv", "venv", "__pycache__", ".idea", ".next", "target", ".cache",
-  ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".eggs",
-])
 
 function walkFiles(dir: string, root: string, out: string[]): void {
   let entries
@@ -18,7 +13,7 @@ function walkFiles(dir: string, root: string, out: string[]): void {
   }
   for (const entry of entries) {
     if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name)) continue
+      if (BLOCKED_DIRS.has(entry.name)) continue
       walkFiles(join(dir, entry.name), root, out)
     } else if (entry.isFile()) {
       out.push(relative(root, join(dir, entry.name)).replace(/\\/g, "/"))

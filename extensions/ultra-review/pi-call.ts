@@ -1,8 +1,8 @@
 import { complete, type UserMessage } from "@earendil-works/pi-ai/compat"
 import type { Api, Message, Model, Tool } from "@earendil-works/pi-ai"
 import { Type } from "@sinclair/typebox"
-import { extractText, isToolMarkup, makeExecutor, runAgentLoop, type AgentChat, type AgentTurn } from "./agent.ts"
-import { EMPTY_RESPONSE_RETRIES, MODEL_MAX_TOKENS, MODEL_TEMPERATURE, REASONING_EFFORT, RETRY_DELAY_MS, SIMPLIFY_MAX_ITERATIONS, SIMPLIFY_MAX_TOOL_CALLS } from "./constants.ts"
+import { extractText, isToolMarkup, makeExecutor, runAgentLoop, MAX_AGENT_CONTEXT_CHARS, type AgentChat, type AgentTurn } from "./agent.ts"
+import { EMPTY_RESPONSE_RETRIES, MAX_AGENT_ITERATIONS, MAX_AGENT_TOOL_CALLS, MODEL_MAX_TOKENS, MODEL_TEMPERATURE, REASONING_EFFORT, RETRY_DELAY_MS, SIMPLIFY_MAX_ITERATIONS, SIMPLIFY_MAX_TOOL_CALLS } from "./constants.ts"
 import { retryOnEmpty, retryOnFailure } from "./retry.ts"
 import type { PiModelLike, PiRegistryLike, ReasoningEffort } from "./types.ts"
 
@@ -35,14 +35,12 @@ export function makeSearchTool(): Tool {
   }
 }
 
-/** Per-spec опции агента: simplify получает search_files и больший бюджет. */
+/** Per-spec опции агента: simplify получает search_files; бюджеты — единые константы. */
 export function agentOptionsForSpec(specId: string): { extraTools: Tool[]; maxIterations: number; maxToolCalls: number } {
   if (specId === "simplify") {
     return { extraTools: [makeSearchTool()], maxIterations: SIMPLIFY_MAX_ITERATIONS, maxToolCalls: SIMPLIFY_MAX_TOOL_CALLS }
   }
-  // 10 итераций / 40 чтений: модель с max reasoning читает много файлов до
-  // вердикта; меньший бюджет упирался в isLast с текстовой разметкой тулов.
-  return { extraTools: [], maxIterations: 10, maxToolCalls: 40 }
+  return { extraTools: [], maxIterations: MAX_AGENT_ITERATIONS, maxToolCalls: MAX_AGENT_TOOL_CALLS }
 }
 
 /** Один ход диалога через провайдерский слой pi (авторизация pi, нормализация pi). */
@@ -129,6 +127,10 @@ export async function judgeViaPi(
 ): Promise<{ text: string }> {
   const user = "Emit your JSON verdict now — exactly the schema from the prompt."
   // Свежий no-tools вызов: у судьи нет тулов, спираль невозможна.
+  // Не-abort ошибки провайдера пробрасываем после последней попытки — иначе
+  // «Judge output could not be parsed» в отчёте скрывало бы реальную причину
+  // (401/5xx/timeout).
+  let lastError: unknown
   for (let i = 0; i < attempts; i++) {
     try {
       const turn = await chatViaPi(
@@ -146,7 +148,11 @@ export async function judgeViaPi(
       if (text) return { text }
     } catch (e) {
       if (signal?.aborted) throw e
+      lastError = e
     }
+  }
+  if (lastError !== undefined) {
+    throw lastError instanceof Error ? lastError : new Error(String(lastError))
   }
   return { text: "" }
 }
@@ -175,14 +181,24 @@ export async function runAgent(
 
   let toolCalls = 0
   let messages: unknown[] = initialMessages
+  // Кумулятивный бюджет на ВСЕ ретраи: runAgentLoop получает ОСТАТОК лимитов
+  // (maxIterations/maxToolCalls/maxContextChars) — раньше каждый ретрай
+  // начинал с нуля, и суммарный расход превышал заявленные капы.
+  let iterationsBudget = opts.maxIterations ?? MAX_AGENT_ITERATIONS
+  let toolBudget = opts.maxToolCalls ?? MAX_AGENT_TOOL_CALLS
+  let contextBudget = MAX_AGENT_CONTEXT_CHARS
   const attempt = async (): Promise<string> => {
     const chat: AgentChat = (msgs, toolsList, s) =>
       chatViaPi(registry, model, prompt, msgs, toolsList as Tool[], s, undefined, effort, sessionId)
     const loop = await runAgentLoop(chat, messages, tools, executor, {
-      maxIterations: opts.maxIterations ?? 8,
-      maxToolCalls: opts.maxToolCalls ?? 30,
+      maxIterations: Math.max(1, iterationsBudget),
+      maxToolCalls: Math.max(0, toolBudget),
+      maxContextChars: Math.max(0, contextBudget),
     }, signal)
     toolCalls += loop.toolCalls
+    iterationsBudget -= loop.iterations
+    toolBudget -= loop.toolCalls
+    contextBudget -= loop.contextChars
     messages = loop.messages
     // Не вердикт (тул-разметка, пусто или проза без JSON-контракта) — считаем
     // пустым, чтобы retryOnEmpty продолжил беседу С тулами: модель дочитает

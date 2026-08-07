@@ -78,6 +78,44 @@ test("multiple fences: code sample first, json verdict second", () => {
   expect(r.context).toBe("FULL")
 })
 
+test("judge output with braces inside quoted strings still parses (string-aware)", async () => {
+  const { mkdtempSync, mkdirSync, rmSync } = await import("node:fs")
+  const { tmpdir } = await import("node:os")
+  const dir = mkdtempSync(join(tmpdir(), "ur-straware-"))
+  const cfg: ReviewConfig = {
+    scope: { id: "test", label: "test scope", description: "", files: ["src/a.ts"] },
+    specs: ["security"],
+    models: [{ id: "m", name: "m", provider: "p", cost: { input: 1, output: 1 } }],
+    deep: false,
+    judge: true,
+  }
+  const deps: ReviewDeps = {
+    ui: { setStatus() {}, select: async () => "x", confirm: async () => true, notify() {} },
+    callModel: async (_m, _p, specId) => {
+      if (specId === "judge") {
+        // Проза с незакрытой скобкой + rationale цитирует код с двумя } в строке.
+        // Наивный depth-скан закрыл бы объект на первом } внутри строки.
+        return {
+          text: 'prose {unclosed {"verdicts":[{"idx":1,"verdict":"VALID","rationale":"a } b } c"}],"summary":{"valid":1},"kept":[1]}',
+          toolCalls: 0,
+          readFiles: [],
+        }
+      }
+      return {
+        text: '{"context":"FULL","findings":[{"severity":"LOW","file":"src/a.ts","line":1,"title":"naming"}]}',
+        toolCalls: 1,
+        readFiles: ["src/a.ts"],
+      }
+    },
+  }
+  const { filename } = await executeReview(deps, dir, cfg)
+  const report = readFileSync(join(dir, "reviews", filename), "utf-8")
+  // Судья распарсен: вердикт проставлен, находка осталась.
+  expect(report).toContain("Final verdict (judge)")
+  expect(report).not.toContain("could not be parsed")
+  rmSync(dir, { recursive: true, force: true })
+})
+
 test("judge DOWNGRADE with new_severity HIGHER than original is ignored (no upgrade)", async () => {
   const { mkdtempSync, mkdirSync, rmSync } = await import("node:fs")
   const { tmpdir } = await import("node:os")

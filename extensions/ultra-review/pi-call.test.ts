@@ -37,6 +37,8 @@ mock.module("./constants.ts", () => ({
   MODEL_TEMPERATURE: 0.3,
   SIMPLIFY_MAX_ITERATIONS: 10,
   SIMPLIFY_MAX_TOOL_CALLS: 40,
+  MAX_AGENT_ITERATIONS: 10,
+  MAX_AGENT_TOOL_CALLS: 40,
   MAX_DIFF_CHARS: 60_000,
   REASONING_EFFORT: "max",
 }))
@@ -236,6 +238,15 @@ test("judgeViaPi возвращает JSON-вердикт судьи", async () 
   const out = await judgeViaPi(fakeRegistry as never, fakeModel as never, "judge prompt")
   expect(out.text).toBe(json)
   expect(completeCalls).toBe(1)
+})
+
+test("judgeViaPi: не-abort ошибка провайдера пробрасывается (не глотается)", async () => {
+  completeImpl = async () => {
+    throw new Error("401 unauthorized")
+  }
+  const { judgeViaPi } = await import("./pi-call.ts")
+  await expect(judgeViaPi(fakeRegistry as never, fakeModel as never, "judge prompt")).rejects.toThrow(/401/)
+  expect(completeCalls).toBe(2) // обе попытки, потом бросок
 })
 
 test("judgeViaPi: пустой ответ → повтор, потом вердикт", async () => {

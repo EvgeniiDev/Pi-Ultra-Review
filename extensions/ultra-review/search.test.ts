@@ -14,6 +14,8 @@ mock.module("./constants.ts", () => ({
   MODEL_TEMPERATURE: 0.3,
   SIMPLIFY_MAX_ITERATIONS: 10,
   SIMPLIFY_MAX_TOOL_CALLS: 40,
+  MAX_AGENT_ITERATIONS: 10,
+  MAX_AGENT_TOOL_CALLS: 40,
 }))
 
 // Динамический импорт — статические хоистятся и загрузились бы ДО mock.module.
@@ -63,6 +65,16 @@ test("rejects file filter inside a blocked dir", async () => {
   const res = await searchFilesSafely(root, "needle", "node_modules/pkg/x.js")
   expect(res.ok).toBe(false)
   expect((res as { ok: false; error: string }).error).toMatch(/blocked/)
+})
+
+test("searchFilesSafely respects the scan budget (maxFiles)", async () => {
+  // Бюджет 0: ни один файл не сканируется → 0 совпадений.
+  const res = await searchFilesSafely(root, "needle", undefined, 0)
+  expect(res.ok).toBe(true)
+  expect((res as { ok: true; text: string }).text).toContain("0 match(es)")
+  // Бюджет 1: максимум один файл просканирован.
+  const one = await searchFilesSafely(root, "needle", undefined, 1)
+  expect((one as { ok: true; text: string }).text).toMatch(/^search: "needle" — \d+ match\(es\)/)
 })
 
 test("rejects empty query and path escapes", async () => {

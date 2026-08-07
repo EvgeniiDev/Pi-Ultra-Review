@@ -14,6 +14,8 @@ mock.module("./constants.ts", () => ({
   MODEL_TEMPERATURE: 0.3,
   SIMPLIFY_MAX_ITERATIONS: 10,
   SIMPLIFY_MAX_TOOL_CALLS: 40,
+  MAX_AGENT_ITERATIONS: 10,
+  MAX_AGENT_TOOL_CALLS: 40,
 }))
 
 // Динамический импорт — статические хоистятся и загрузились бы ДО mock.module.

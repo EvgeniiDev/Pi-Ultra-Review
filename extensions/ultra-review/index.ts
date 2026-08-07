@@ -5,7 +5,7 @@ import { SPECIALIZATIONS } from "./constants.ts"
 import { executeReview } from "./engine.ts"
 import { getScopes } from "./scopes.ts"
 import { agentOptionsForSpec, judgeViaPi, runAgent } from "./pi-call.ts"
-import type { PiModelLike, SpecId, UiLike } from "./types.ts"
+import { parseModelKey, type PiModelLike, type SpecId, type UiLike } from "./types.ts"
 import { runWizard } from "./wizard.ts"
 
 const toolSchema = Type.Object({
@@ -25,16 +25,18 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, ctx) {
       try {
         const scopes = getScopes(ctx.cwd)
-        const scope = scopes.find((s) => s.id === params.scopeId) || scopes[0]
+        const scope = scopes.find((s) => s.id === params.scopeId)
+        if (!scope) {
+          throw new Error(`Unknown scopeId "${params.scopeId}" — available: ${scopes.map((s) => s.id).join(", ") || "none"}`)
+        }
         const specs = params.specIds.filter((s) => s in SPECIALIZATIONS) as SpecId[]
         const models = params.modelIds
           .map((id) => {
-            const i = id.indexOf("/")
-            return i < 0 ? undefined : ctx.modelRegistry.find(id.slice(0, i), id.slice(i + 1))
+            const { provider, modelId } = parseModelKey(id)
+            return ctx.modelRegistry.find(provider, modelId)
           })
           .filter((m): m is NonNullable<typeof m> => !!m)
 
-        if (!scope) throw new Error("No reviewable git scopes found")
         if (specs.length === 0) throw new Error("No valid specIds")
         if (models.length === 0) throw new Error("No valid modelIds")
 

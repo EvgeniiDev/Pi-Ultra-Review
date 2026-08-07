@@ -30,9 +30,15 @@ export function buildModelPool(registry: PiRegistryLike, blockedProviders: strin
     .filter((m): m is NonNullable<typeof m> => !!m)
   const all = registry.getAll()
   const seen = new Set<string>()
-  return [...extra, ...all]
-    .filter((m) => !blockedProviders.includes(m.provider))
-    .filter((m) => (seen.has(modelKey(m)) ? false : (seen.add(modelKey(m)), true)))
+  const pool: PiModelLike[] = []
+  for (const m of [...extra, ...all]) {
+    if (blockedProviders.includes(m.provider)) continue
+    const key = modelKey(m)
+    if (seen.has(key)) continue
+    seen.add(key)
+    pool.push(m)
+  }
+  return pool
 }
 
 /**

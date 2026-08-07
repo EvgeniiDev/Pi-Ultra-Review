@@ -132,25 +132,16 @@ function severityRank(severity: string): number {
 }
 
 /**
- * Кандидаты на JSON-вердикт из ответа модели. Модели оборачивают вердикт
- * прозой, фенсами и кодом с фигурными скобками — поэтому ищем по очереди:
- * 1) все ```json / ```-фенсы (по порядку);
- * 2) сбалансированный объект от ПОСЛЕДНЕГО "{" (вердикт обычно в конце);
- * 3) срез первого { … последнего } (последний шанс).
+ * Сбалансированные {…}-объекты от каждого '{' — string/escape-aware: скобки
+ * внутри строк не считаются структурными (судья цитирует код с { } в rationale).
+ * Ограничено последними maxCandidates: худший случай O(N×len) вместо O(len²)
+ * на malformed-выводе с кучей незакрытых «{».
  */
-function jsonCandidates(text: string): string[] {
+function balancedJsonCandidates(text: string, maxCandidates = 20): string[] {
   const out: string[] = []
-  const fenceRe = /```(?:json)?\s*([\s\S]*?)```/g
-  for (const m of text.matchAll(fenceRe)) {
-    const cand = m[1].trim()
-    if (cand) out.push(cand)
-  }
-  // Сбалансированный объект от ПОСЛЕДНЕГО "{": вердикт обычно в конце.
-  // Собрать индексы { сразу — обратный проход через lastIndexOf(fromIndex)
-  // при fromIndex=-1 клампится в 0 и зацикливается на первом символе.
   const opens: number[] = []
   for (let i = text.indexOf("{"); i >= 0; i = text.indexOf("{", i + 1)) opens.push(i)
-  for (let n = opens.length - 1; n >= 0; n--) {
+  for (let n = opens.length - 1; n >= 0 && out.length < maxCandidates; n--) {
     const idx = opens[n]
     let depth = 0
     let inStr = false
@@ -174,6 +165,24 @@ function jsonCandidates(text: string): string[] {
       }
     }
   }
+  return out
+}
+
+/**
+ * Кандидаты на JSON-вердикт из ответа модели. Модели оборачивают вердикт
+ * прозой, фенсами и кодом с фигурными скобками — поэтому ищем по очереди:
+ * 1) все ```json / ```-фенсы (по порядку);
+ * 2) сбалансированные объекты от ПОСЛЕДНЕГО "{" (вердикт обычно в конце);
+ * 3) срез первого { … последнего } (последний шанс).
+ */
+function jsonCandidates(text: string): string[] {
+  const out: string[] = []
+  const fenceRe = /```(?:json)?\s*([\s\S]*?)```/g
+  for (const m of text.matchAll(fenceRe)) {
+    const cand = m[1].trim()
+    if (cand) out.push(cand)
+  }
+  out.push(...balancedJsonCandidates(text))
   const start = text.indexOf("{")
   const end = text.lastIndexOf("}")
   if (start >= 0 && end > start) out.push(text.slice(start, end + 1))
@@ -272,15 +281,20 @@ export function processTaskOutput(output: string, specId: string, scopeFiles: Se
   return { context, findings, rejectedCount }
 }
 
+/** Политика вердикта от максимальной severity — единый источник (раньше два). */
+function verdictForMaxSeverity(max: number): string {
+  if (max >= 3) return "REJECTED"
+  if (max === 2) return "REQUIRES_CHANGES"
+  return "APPROVED"
+}
+
 /** Политика вердикта — серверная, не от модели. LOW advisory. */
 function taskVerdict(context: string, findings: ValidatedFinding[]): { verdict: string; risk: string } {
   const max = findings.reduce((acc, f) => Math.max(acc, severityRank(f.severity)), 0)
   if (context === "INSUFFICIENT") return { verdict: "NEEDS_CONTEXT", risk: "UNKNOWN" }
   if (context === "PARTIAL" && findings.length === 0) return { verdict: "NEEDS_CONTEXT", risk: "UNKNOWN" }
-  if (max >= 3) return { verdict: "REJECTED", risk: SEV_NAME[max] }
-  if (max === 2) return { verdict: "REQUIRES_CHANGES", risk: "MEDIUM" }
-  if (max === 1) return { verdict: "APPROVED", risk: "LOW" }
-  return { verdict: "APPROVED", risk: "NONE" }
+  const risk = max === 0 ? "NONE" : max === 1 ? "LOW" : max === 2 ? "MEDIUM" : SEV_NAME[max]
+  return { verdict: verdictForMaxSeverity(max), risk }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -312,39 +326,21 @@ function parseJudgeJson(text: string): JudgeOutput | null {
       // идём в глубокий скан
     }
   }
-  // Сбалансированные объекты от каждого "{": судья мог вставить текст между
-  // находками или обернуть JSON в рассуждения. Нужен объект с "verdicts".
-  const opens: number[] = []
-  for (let i = text.indexOf("{"); i >= 0; i = text.indexOf("{", i + 1)) opens.push(i)
-  for (let n = opens.length - 1; n >= 0; n--) {
-    let depth = 0
-    const from = opens[n]
-    for (let j = from; j < text.length; j++) {
-      const ch = text[j]
-      if (ch === "{") depth++
-      else if (ch === "}") {
-        depth--
-        if (depth === 0) {
-          const cand = text.slice(from, j + 1)
-          try {
-            const parsed = JSON.parse(cand) as JudgeOutput
-            if (Array.isArray(parsed?.verdicts)) return parsed
-          } catch {
-            // невалидный кандидат — пробуем следующий
-          }
-          break
-        }
-      }
+  // Сбалансированные объекты от каждого "{" (string-aware, см. balancedJsonCandidates):
+  // судья мог вставить текст между находками или процитировать код со скобками.
+  for (const cand of balancedJsonCandidates(text)) {
+    try {
+      const parsed = JSON.parse(cand) as JudgeOutput
+      if (Array.isArray(parsed?.verdicts)) return parsed
+    } catch {
+      // невалидный кандидат — пробуем следующий
     }
   }
   return null
 }
 
 function judgeVerdict(kept: ValidatedFinding[]): string {
-  const max = kept.reduce((acc, f) => Math.max(acc, severityRank(f.severity)), 0)
-  if (max >= 3) return "REJECTED"
-  if (max === 2) return "REQUIRES_CHANGES"
-  return "APPROVED"
+  return verdictForMaxSeverity(kept.reduce((acc, f) => Math.max(acc, severityRank(f.severity)), 0))
 }
 
 function applyJudge(parsed: JudgeOutput, findings: JudgedFinding[], judgeModelName: string) {

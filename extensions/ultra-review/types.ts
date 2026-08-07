@@ -56,15 +56,7 @@ export function assertSpecId(value: unknown): SpecId {
 }
 
 /** Находка, распарсенная из вывода ревьюера для судьи. */
-export interface ParsedFinding {
-  idx: number
-  severity: string
-  file: string
-  line: string
-  description: string
-  agent: string
-  spec: string
-}
+// (ParsedFinding удалён — мёртвый код; судья работает с JudgedFinding.)
 
 /**
  * Минимальный набор UI-методов, который нужен движку и мастеру.
@@ -92,9 +84,6 @@ export type PiModelLike = Pick<Model<Api>, "id" | "name" | "provider" | "cost">
 
 /** Реестр моделей pi как есть — без дублирования интерфейса. */
 export type PiRegistryLike = ModelRegistry
-
-/** Авторизация из pi — выведена из сигнатуры реестра, а не скопирована. */
-export type PiAuthResult = Awaited<ReturnType<ModelRegistry["getApiKeyAndHeaders"]>>
 
 /** Уровень reasoning для вызова модели (см. REASONING_EFFORT в constants). */
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max"

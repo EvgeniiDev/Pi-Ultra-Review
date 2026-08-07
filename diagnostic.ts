@@ -1,10 +1,11 @@
 // Стендап-диагностика: прямой вызов zen-relay, повторяющий цикл агента.
 import { readFile, readdir } from "node:fs/promises"
+import { BLOCKED_DIRS } from "./extensions/ultra-review/agent.ts"
 import { buildPrompt } from "./extensions/ultra-review/prompts.ts"
 
 async function collectFiles(dir: string): Promise<string[]> {
   const out: string[] = []
-  const skip = new Set([".git", "node_modules", ".pi", "reviews", "dist", "build", "coverage", ".venv", "venv", "__pycache__", ".idea", ".next", "target", ".cache", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".eggs", ".claude", ".ruff_cache"])
+  const skip = BLOCKED_DIRS
   const walk = async (d: string) => {
     let entries: import("node:fs").Dirent[]
     try { entries = await readdir(d, { withFileTypes: true }) } catch { return }

@@ -33,9 +33,15 @@ export const REASONING_EFFORT = "max"
 export const EMPTY_RESPONSE_RETRIES = 2
 export const RETRY_DELAY_MS = 1500
 
-// Бюджет агента simplify: циклы «поиск → чтение кандидата → подтверждение».
-export const SIMPLIFY_MAX_ITERATIONS = 10
-export const SIMPLIFY_MAX_TOOL_CALLS = 40
+// Бюджет агента: единый источник для всех спеков (simplify получает ещё и
+// search_files). Раньше дефолты были раскиданы хардкодом (8/30 в runAgent,
+// 6/30 в runAgentLoop) и уже разошлись. Бюджет кумулятивен на ВСЕ ретраи
+// (см. runAgent: лимиты передаются с учётом уже потраченного).
+export const MAX_AGENT_ITERATIONS = 10
+export const MAX_AGENT_TOOL_CALLS = 40
+
+export const SIMPLIFY_MAX_ITERATIONS = MAX_AGENT_ITERATIONS
+export const SIMPLIFY_MAX_TOOL_CALLS = MAX_AGENT_TOOL_CALLS
 
 export const SPECIALIZATIONS: Record<SpecId, string> = {
   security: "Security (vuln, injection, auth, secrets, OWASP)",

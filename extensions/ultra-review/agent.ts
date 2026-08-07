@@ -1,5 +1,6 @@
 import { readFile, readdir, realpath, stat } from "node:fs/promises"
 import { isAbsolute, join, relative, resolve } from "node:path"
+import { MAX_AGENT_ITERATIONS, MAX_AGENT_TOOL_CALLS } from "./constants.ts"
 import { normalizePath } from "./types.ts"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -9,7 +10,11 @@ import { normalizePath } from "./types.ts"
 
 export type ReadResult = { ok: true; text: string } | { ok: false; error: string }
 
-const BLOCKED_DIRS = new Set([
+/**
+ * Единый источник политики песочницы (раньше — три копии в agent/scopes/diagnostic,
+ * уже разошлись). scopes.ts и diagnostic.ts импортируют этот список.
+ */
+export const BLOCKED_DIRS = new Set([
   ".git", "node_modules", ".pi", "reviews", "dist", "build", "coverage",
   ".venv", "venv", "__pycache__", ".idea", ".next", "target", ".cache",
   ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".eggs",
@@ -18,11 +23,15 @@ const MAX_FILE_BYTES = 100 * 1024
 const DEFAULT_CHUNK = 500
 // Суммарный объём результатов чтения в истории агента: больше — контекст
 // раздувается на каждой итерации, слабые модели начинают сыпаться.
-const MAX_AGENT_CONTEXT_CHARS = 150_000
+export const MAX_AGENT_CONTEXT_CHARS = 150_000
 const MAX_SEARCH_MATCHES = 20
 const MAX_SEARCH_RESULT_CHARS = 8 * 1024
 const MAX_QUERY_LEN = 200
 const SNIPPET_LEN = 120
+// Бюджет search_files: на один вызов просматриваем не более N файлов —
+// simplify-агент может звать search до 40 раз, полный обход большого репо
+// на каждый вызов без лимита упирался бы в минуты.
+const MAX_SEARCH_FILES = 2000
 
 /**
  * Чтение файла в песочнице репозитория:
@@ -97,7 +106,7 @@ export async function readFileSafely(root: string, path: string, startLine?: num
  * симлинков (не ходим за root), бинарников и файлов > 100 КБ.
  * Возвращает до MAX_SEARCH_MATCHES совпадений path:line: snippet.
  */
-export async function searchFilesSafely(root: string, query: string, pathFilter?: string): Promise<ReadResult> {
+export async function searchFilesSafely(root: string, query: string, pathFilter?: string, maxFiles = MAX_SEARCH_FILES): Promise<ReadResult> {
   const q = query.trim().toLowerCase()
   if (!q) return { ok: false, error: "query required" }
   if (q.length > MAX_QUERY_LEN) return { ok: false, error: `query too long (> ${MAX_QUERY_LEN} chars)` }
@@ -134,8 +143,11 @@ export async function searchFilesSafely(root: string, query: string, pathFilter?
   const matches: Array<{ path: string; line: number; snippet: string }> = []
   let total = 0
   let shown = 0
+  let scanned = 0
 
   const addFile = async (abs: string, relPath: string) => {
+    if (scanned >= maxFiles) return
+    scanned++
     let st
     try {
       st = await stat(abs)
@@ -258,6 +270,8 @@ export interface AgentLoopResult {
   text: string
   iterations: number
   toolCalls: number
+  /** Символы контекста, добавленные за цикл (для кумулятивного бюджета ретраев). */
+  contextChars: number
   /** Накопленная история сообщений — для продолжения беседы при ретрае. */
   messages: unknown[]
 }
@@ -333,13 +347,28 @@ export function extractToolCalls(content: unknown[]): AgentToolCall[] {
   return textual
 }
 
+/** Протокол tool-calling: каждый assistant tool_call обязан получить tool-ответ. */
+function pushToolErrors(messages: unknown[], calls: AgentToolCall[], text: string) {
+  for (const c of calls) {
+    messages.push({
+      role: "toolResult",
+      toolCallId: c.id ?? "tool",
+      toolName: c.name ?? "tool",
+      content: [{ type: "text", text }],
+      isError: true,
+      timestamp: Date.now(),
+    })
+  }
+}
+
 /**
  * Многошаговый диалог с моделью:
  * - вызывает chat, пока модель не перестанет запрашивать тулы;
  * - исполняет запросы read_file/search_files (параллельно) и возвращает
  *   результаты модели;
  * - жёстко ограничен: maxIterations итераций, maxToolCalls чтений,
- *   maxContextChars накопленного контекста;
+ *   maxContextChars накопленного контекста (лимиты — остаток общего бюджета,
+ *   см. runAgent: кумулятивны на все ретраи);
  * - на последней итерации тулы убираются (модель обязана ответить); пустой
  *   финальный текст ловит retryOnEmpty, который продолжает ТУ ЖЕ беседу
  *   (messages в результате) — контекст чтений и кэш-префикс сохраняются.
@@ -352,8 +381,8 @@ export async function runAgentLoop(
   opts: { maxIterations?: number; maxToolCalls?: number; maxContextChars?: number } = {},
   signal?: AbortSignal,
 ): Promise<AgentLoopResult> {
-  const maxIterations = opts.maxIterations ?? 6
-  const maxToolCalls = opts.maxToolCalls ?? 30
+  const maxIterations = opts.maxIterations ?? MAX_AGENT_ITERATIONS
+  const maxToolCalls = opts.maxToolCalls ?? MAX_AGENT_TOOL_CALLS
   const maxContextChars = opts.maxContextChars ?? MAX_AGENT_CONTEXT_CHARS
   const messages = [...initialMessages]
   let toolCalls = 0
@@ -374,7 +403,7 @@ export async function runAgentLoop(
       // Не вердикт (пусто/тул-разметка/проза без контракта) — не выходим
       // здесь: уходим в финальные ноджи, где текст можно заменить на JSON.
       if (answer.trim() && !isToolMarkup(answer)) {
-        return { text: answer, iterations: iteration + 1, toolCalls, messages }
+        return { text: answer, iterations: iteration + 1, toolCalls, contextChars, messages }
       }
       break
     }
@@ -383,16 +412,7 @@ export async function runAgentLoop(
       // реальному tool_call (апстрим валидирует, что у каждого assistant
       // tool_call есть tool-ответ с тем же id) и выходим с накопленным текстом.
       messages.push(turn.assistantMessage)
-      for (const c of calls) {
-        messages.push({
-          role: "toolResult",
-          toolCallId: c.id ?? "tool",
-          toolName: c.name ?? "tool",
-          content: [{ type: "text", text: "No more tool calls allowed. Output your final verdict now." }],
-          isError: true,
-          timestamp: Date.now(),
-        })
-      }
+      pushToolErrors(messages, calls, "No more tool calls allowed. Output your final verdict now.")
       break
     }
 
@@ -402,16 +422,7 @@ export async function runAgentLoop(
       forceFinish = true
       // Тот же протокол: отвечаем каждому реальному tool_call, а не одному
       // фейковому id — иначе апстрим отклоняет историю сообщений целиком.
-      for (const c of calls) {
-        messages.push({
-          role: "toolResult",
-          toolCallId: c.id ?? "tool",
-          toolName: c.name ?? "tool",
-          content: [{ type: "text", text: "Read budget reached. Output your final verdict now based on what you have." }],
-          isError: true,
-          timestamp: Date.now(),
-        })
-      }
+      pushToolErrors(messages, calls, "Read budget reached. Output your final verdict now based on what you have.")
       continue
     }
 
@@ -454,5 +465,5 @@ export async function runAgentLoop(
       }
     }
   }
-  return { text, iterations: maxIterations, toolCalls, messages }
+  return { text, iterations: maxIterations, toolCalls, contextChars, messages }
 }
