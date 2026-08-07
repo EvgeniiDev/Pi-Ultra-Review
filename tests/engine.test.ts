@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { executeReview, processTaskOutput, type ReviewDeps } from "./engine.ts"
-import type { ReviewConfig } from "./types.ts"
+import { executeReview, processTaskOutput, type ReviewDeps } from "../extensions/ultra-review/engine.ts"
+import type { ReviewConfig } from "../extensions/ultra-review/types.ts"
 
 const scopeFiles = new Set(["src/a.ts"])
 const readFiles = new Set<string>()

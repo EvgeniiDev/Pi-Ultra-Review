@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import { SPECIALIZATIONS } from "./constants.ts"
-import { REVIEW_SPECS } from "./prompts.ts"
-import { assertSpecId, SPEC_IDS } from "./types.ts"
+import { SPECIALIZATIONS } from "../extensions/ultra-review/constants.ts"
+import { REVIEW_SPECS } from "../extensions/ultra-review/prompts.ts"
+import { assertSpecId, SPEC_IDS } from "../extensions/ultra-review/types.ts"
 
 describe("spec contract", () => {
   test("SPEC_IDS ↔ SPECIALIZATIONS ↔ REVIEW_SPECS консистентны (никакого дрейфа)", () => {

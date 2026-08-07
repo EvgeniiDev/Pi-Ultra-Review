@@ -80,12 +80,12 @@ async function runSession(
       startLine: Type.Optional(Type.Number({ description: "1-based first line (default 1)" })),
       endLine: Type.Optional(Type.Number({ description: "1-based last line" })),
     }),
-    execute: async (_id, params: { path?: unknown; startLine?: unknown; endLine?: unknown }) => {
+    execute: async (_id, params) => {
       if (budget-- <= 0) {
-        return { content: [{ type: "text", text: "ERROR: read budget reached. Output your final verdict now based on what you have read." }], details: {}, terminate: true }
+        return { content: [{ type: "text", text: "ERROR: read budget reached. Output your final verdict now based on what you have read." }], details: { isError: true }, terminate: true }
       }
       const path = String(params.path ?? "")
-      const res = await readFileSafely(root, path, params.startLine as number | undefined, params.endLine as number | undefined)
+      const res = await readFileSafely(root, path, params.startLine, params.endLine)
       if (res.ok && path) readFiles.add(path.replace(/\\/g, "/").replace(/^\.\//, ""))
       return {
         content: [{ type: "text", text: res.ok ? res.text : `ERROR: ${res.error}` }],
@@ -102,9 +102,9 @@ async function runSession(
       query: Type.String({ description: "Substring to search for (case-insensitive)" }),
       path: Type.Optional(Type.String({ description: "Repository-relative directory or file to restrict the search to (default: repository root)" })),
     }),
-    execute: async (_id, params: { query?: unknown; path?: unknown }) => {
+    execute: async (_id, params) => {
       if (budget-- <= 0) {
-        return { content: [{ type: "text", text: "ERROR: search budget reached. Output your final verdict now based on what you have." }], details: {}, terminate: true }
+        return { content: [{ type: "text", text: "ERROR: search budget reached. Output your final verdict now based on what you have." }], details: { isError: true }, terminate: true }
       }
       const query = String(params.query ?? "")
       const path = params.path === undefined ? undefined : String(params.path)
@@ -181,7 +181,7 @@ export async function judgeViaPi(
   model: PiModelLike,
   prompt: string,
   signal?: AbortSignal,
-): Promise<{ text: string }> {
+): Promise<{ text: string; toolCalls: number; readFiles: string[] }> {
   const runtime = await getModelRuntime()
   const resourceLoader = await makeLoader(prompt)
   const { session } = await createAgentSession({
@@ -200,7 +200,7 @@ export async function judgeViaPi(
   signal?.addEventListener("abort", onAbort, { once: true })
   try {
     await session.prompt("Emit your JSON verdict now — exactly the schema from the prompt.")
-    return { text: lastAssistantText(session) }
+    return { text: lastAssistantText(session), toolCalls: 0, readFiles: [] }
   } finally {
     signal?.removeEventListener("abort", onAbort)
     session.dispose()

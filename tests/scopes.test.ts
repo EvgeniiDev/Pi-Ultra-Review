@@ -3,7 +3,7 @@ import { execSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { getScopes, resolveScope } from "./scopes.ts"
+import { getScopes, resolveScope } from "../extensions/ultra-review/scopes.ts"
 
 function git(cwd: string, cmd: string): string {
   return execSync(`git ${cmd}`, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim()

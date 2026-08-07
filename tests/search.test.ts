@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 // pi-call.ts импортирует модули, которые вне рантайма pi не резолвятся, —
-import { searchFilesSafely } from "./agent.ts"
+import { searchFilesSafely } from "../extensions/ultra-review/agent.ts"
 
 let root: string
 beforeAll(() => {
